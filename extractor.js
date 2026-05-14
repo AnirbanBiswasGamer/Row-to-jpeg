@@ -1,4 +1,4 @@
-const MIN_EMBEDDED_JPEG_SIZE_BYTES = 64 * 1024;
+const MIN_EMBEDDED_JPEG_SIZE_64KB = 64 * 1024;
 
 /**
  * Extracts the largest embedded JPEG from a RAW file (NEF, CR2, etc.)
@@ -18,7 +18,7 @@ function findLargestEmbeddedJpeg(buffer) {
     if (end === -1) continue;
 
     const candidate = buffer.subarray(start, end);
-    if (candidate.length < MIN_EMBEDDED_JPEG_SIZE_BYTES) continue;
+    if (candidate.length < MIN_EMBEDDED_JPEG_SIZE_64KB) continue;
 
     if (!bestJpeg || candidate.length > bestJpeg.length) {
       bestJpeg = candidate;
