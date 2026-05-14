@@ -30,7 +30,7 @@ const RESERVED_WINDOWS_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM
 function normalizeQuality(quality, fallback = 90) {
   const num = parseInt(quality, 10);
   if (!Number.isFinite(num)) return fallback;
-  // Keep JPEG quality in 1..100 to match encoder expectations.
+  // Keep encoder quality in 1..100 to match JPEG encoder expectations.
   return Math.min(100, Math.max(1, num));
 }
 
@@ -39,12 +39,11 @@ async function convertWithWIC({ inputPath, outputPath, format, quality }) {
   const safeInputPath = inputPath.replace(/'/g, "''");
   const safeOutputPath = outputPath.replace(/'/g, "''");
   const normalizedQuality = normalizeQuality(quality, 90);
+  // Use preserve/on-load decoding to avoid lazy decode issues before stream close.
   const psCommand = `
     Add-Type -AssemblyName PresentationCore, PresentationFramework;
     $stream = New-Object System.IO.FileStream('${safeInputPath}', [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read);
     try {
-    # PreservePixelFormat + OnLoad avoids delayed/lazy decode issues seen in some RAW decoders.
-    # OnLoad fully decodes before stream close, improving reliability for WIC JPEG conversion.
     $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat, [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad);
     if ($decoder.Frames.Count -gt 0) {
       $frame = $decoder.Frames[0];
@@ -100,7 +99,7 @@ async function smartConvert(params) {
   // 1. Try "In-App" JPEG extraction first for JPEG outputs only.
   // Canon RAW previews can carry camera-style preview formatting, so skip embedded extraction.
   // Embedded JPEG extraction is a direct byte copy and does not re-encode.
-  // To honor user-selected JPEG quality, only use embedded extraction at 100 (no quality reduction requested).
+  // This path is intentionally limited to quality 100; lower/default values force re-encoding so the quality selector is respected.
   if (normalizedParams.format === 'jpg' && normalizedParams.quality === 100 && !CANON_RAW_EXTENSIONS.has(ext)) {
     try {
       console.log(`Extracting embedded JPEG from ${normalizedParams.inputPath}...`);
