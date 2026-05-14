@@ -65,13 +65,13 @@ function findJpegEnd(buffer, start) {
     }
 
     if (marker === 0xDA) {
-      offset = markerOffset + 1;
+      const segmentLengthOffset = markerOffset + 1;
 
-      if (offset + 2 > buffer.length) return -1;
+      if (segmentLengthOffset + 2 > buffer.length) return -1;
 
-      const segmentLength = buffer.readUInt16BE(offset);
-      if (segmentLength < 2 || offset + segmentLength > buffer.length) return -1;
-      offset += segmentLength;
+      const segmentLength = buffer.readUInt16BE(segmentLengthOffset);
+      if (segmentLength < 2 || segmentLengthOffset + segmentLength > buffer.length) return -1;
+      offset = segmentLengthOffset + segmentLength;
 
       while (offset < buffer.length - 1) {
         if (buffer[offset] !== 0xFF) {
@@ -96,10 +96,11 @@ function findJpegEnd(buffer, start) {
     }
 
     if (markerOffset + 3 > buffer.length) return -1;
-    const segmentLength = buffer.readUInt16BE(markerOffset + 1);
-    if (segmentLength < 2) return -1;
+    const segmentLengthOffset = markerOffset + 1;
+    const segmentLength = buffer.readUInt16BE(segmentLengthOffset);
+    if (segmentLength < 2 || segmentLengthOffset + segmentLength > buffer.length) return -1;
 
-    offset = markerOffset + 1 + segmentLength;
+    offset = segmentLengthOffset + segmentLength;
   }
 
   return -1;
