@@ -5,8 +5,10 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
 import { existsSync, createWriteStream, mkdirSync } from 'fs';
+import { createRequire } from 'module';
 import multer from 'multer';
-import archiver from 'archiver';
+const require = createRequire(import.meta.url);
+const archiver = require('archiver');
 
 // Ensure directories exist
 if (!existsSync('uploads')) mkdirSync('uploads');
