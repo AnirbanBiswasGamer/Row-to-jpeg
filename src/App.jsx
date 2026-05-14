@@ -60,27 +60,34 @@ function App() {
 
   const pickFolder = async (type) => {
     try {
+      // 1. Try native Tauri dialog if available
       if (isTauri) {
-        const { open } = await import('@tauri-apps/plugin-dialog');
-        const selected = await open({ directory: true, multiple: false });
-        if (typeof selected === 'string' && selected.length > 0) {
-          if (type === 'input') setInputDir(selected);
-          else setOutputDir(selected);
+        try {
+          const { open } = await import('@tauri-apps/plugin-dialog');
+          const selected = await open({ directory: true, multiple: false });
+          if (selected) {
+            const path = Array.isArray(selected) ? selected[0] : selected;
+            if (type === 'input') setInputDir(path);
+            else setOutputDir(path);
+            return;
+          }
+        } catch (tauriErr) {
+          console.warn("Tauri dialog plugin failed, falling back to API picker:", tauriErr);
+          // Continue to fallback
         }
-        return;
       }
 
+      // 2. Fallback to our robust API-based PowerShell picker
       const res = await fetch(`${API_BASE}/api/pick-folder`);
-      if (!res.ok) throw new Error(`Folder picker failed (${res.status})`);
+      if (!res.ok) throw new Error(`Server picker failed (HTTP ${res.status})`);
       const data = await res.json();
       if (data.path) {
         if (type === 'input') setInputDir(data.path);
         else setOutputDir(data.path);
       }
     } catch (err) {
-      console.error(err);
-      const pickerMode = isTauri ? 'Tauri dialog' : 'system picker';
-      alert(err?.message || `Unable to pick folder via ${pickerMode}. Please try again or check permissions.`);
+      console.error("Folder pick error:", err);
+      alert(`Connection Error: Ensure the background server is running. ${err.message}`);
     }
   };
 
@@ -357,7 +364,12 @@ function App() {
                 </span>
               </div>
               <div className="flex items-center gap-md">
-                {status.zipPath ? (
+                {status.error ? (
+                  <div className="text-error font-bold flex items-center gap-1 text-label-sm">
+                    <span className="material-symbols-outlined text-[20px]">error</span>
+                    Error: {status.error}
+                  </div>
+                ) : status.zipPath ? (
                   <a 
                     href={`${API_BASE}/api/download/${status.zipPath}`} 
                     download={status.zipPath}

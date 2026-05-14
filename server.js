@@ -1,14 +1,14 @@
 import express from 'express';
 import cors from 'cors';
-import { exec, execFile } from 'child_process';
+import { exec, execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
 import { existsSync, createWriteStream, mkdirSync } from 'fs';
 import { createRequire } from 'module';
-import multer from 'multer';
 const require = createRequire(import.meta.url);
 const archiver = require('archiver');
+import multer from 'multer';
 
 // Ensure directories exist
 if (!existsSync('uploads')) mkdirSync('uploads');
@@ -26,11 +26,56 @@ const DEFAULT_MAGICK_PATH = process.platform === 'win32'
 const MAGICK_PATH = (process.env.MAGICK_PATH || DEFAULT_MAGICK_PATH).replace(/^['"]+|['"]+$/g, '');
 const RESERVED_WINDOWS_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9']);
 
+async function convertWithWIC({ inputPath, outputPath, format, quality }) {
+  const encoderClass = format === 'png' ? 'PngBitmapEncoder' : 'JpegBitmapEncoder';
+  const psCommand = `
+    Add-Type -AssemblyName PresentationCore, PresentationFramework;
+    $stream = New-Object System.IO.FileStream("${inputPath.replace(/"/g, '`"')}", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read);
+    try {
+      $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::None, [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad);
+      $frame = $decoder.Frames[0];
+      $encoder = New-Object System.Windows.Media.Imaging.${encoderClass};
+      if ("${format}" -eq "jpg") { $encoder.QualityLevel = ${quality || 90} }
+      $encoder.Frames.Add($frame);
+      $outStream = New-Object System.IO.FileStream("${outputPath.replace(/"/g, '`"')}", [System.IO.FileMode]::Create);
+      $encoder.Save($outStream);
+      $outStream.Close();
+    } finally {
+      $stream.Close();
+    }
+  `;
+  
+  await execPromise(`powershell -Command "${psCommand.replace(/\n/g, ' ')}"`);
+}
+
 async function convertWithMagick({ inputPath, outputPath, format, quality }) {
-  const args = [inputPath, '-auto-orient', '-auto-level'];
+  const args = [
+    '-quiet',
+    '-define', 'dng:read-thumbnail=false',
+    `${inputPath}[0]`,
+    '-auto-orient',
+    '-auto-level',
+    '-colorspace', 'sRGB'
+  ];
   if (format === 'jpg') args.push('-quality', String(quality || 100));
   args.push(outputPath);
   await execFilePromise(MAGICK_PATH, args);
+}
+
+const RAW_EXTENSIONS = ['.nef', '.cr2', '.arw', '.dng', '.orf', '.raf'];
+
+async function smartConvert(params) {
+  const ext = path.extname(params.inputPath).toLowerCase();
+  if (process.platform === 'win32' && RAW_EXTENSIONS.includes(ext)) {
+    try {
+      console.log(`Using WIC for ${ext} conversion...`);
+      await convertWithWIC(params);
+      return;
+    } catch (err) {
+      console.warn("WIC conversion failed, falling back to Magick:", err.message);
+    }
+  }
+  await convertWithMagick(params);
 }
 
 function sanitizeOutputBaseName(input, fallbackValue) {
@@ -91,8 +136,15 @@ app.get('/api/pick-folder', async (req, res) => {
 });
 
 // Setup storage for uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, 'uploads/'),
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
 const upload = multer({ 
-  dest: 'uploads/',
+  storage: storage,
   limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
 });
 
@@ -189,7 +241,7 @@ async function startLocalConversion(files, inputDir, outputDir, format, quality)
     }
 
     try {
-      await convertWithMagick({ inputPath, outputPath, format, quality });
+      await smartConvert({ inputPath, outputPath, format, quality });
       conversionStatus.logs.push(`Completed ${file}`);
     } catch (err) {
       conversionStatus.logs.push(`Error ${file}: ${err.message}`);
@@ -248,43 +300,62 @@ app.post('/api/convert-cloud', async (req, res) => {
 
     for (let i = 0; i < normalizedFiles.length; i++) {
       const file = normalizedFiles[i];
-      const ext = format === 'png' ? '.png' : '.jpg';
-      const baseSeed = file.baseName || `converted_${i + 1}`;
-      let baseName = baseSeed;
-      let suffix = 1;
-      while (usedOutputNames.has(baseName.toLowerCase())) {
-        baseName = `${baseSeed}_${suffix}`;
-        suffix += 1;
-      }
-      usedOutputNames.add(baseName.toLowerCase());
-      const outputPath = path.join(outputDir, `${baseName}${ext}`);
-      
-      conversionStatus.currentFile = file.originalname;
-      conversionStatus.progress = i + 1;
+      try {
+        const ext = format === 'png' ? '.png' : '.jpg';
+        const baseSeed = file.baseName || `converted_${i + 1}`;
+        let baseName = baseSeed;
+        let suffix = 1;
+        while (usedOutputNames.has(baseName.toLowerCase())) {
+          baseName = `${baseSeed}_${suffix}`;
+          suffix += 1;
+        }
+        usedOutputNames.add(baseName.toLowerCase());
+        const outputPath = path.join(outputDir, `${baseName}${ext}`);
+        
+        conversionStatus.currentFile = file.originalname;
+        conversionStatus.progress = i + 1;
 
-      await convertWithMagick({ inputPath: file.path, outputPath, format, quality });
-      conversionStatus.logs.push(`Completed ${file.originalname}`);
-      
-      // Cleanup uploaded temp file
-      await fs.unlink(file.path).catch(() => {});
+        await smartConvert({ inputPath: file.path, outputPath, format, quality });
+        conversionStatus.logs.push(`Completed ${file.originalname}`);
+      } catch (fileErr) {
+        console.error(`Error converting ${file.originalname}:`, fileErr);
+        conversionStatus.logs.push(`Error ${file.originalname}: ${fileErr.message}`);
+        // Continue to next file
+      } finally {
+        // Cleanup uploaded temp file
+        await fs.unlink(file.path).catch(() => {});
+      }
     }
 
-    const zipName = `converted_${Date.now()}.zip`;
-    const zipPath = path.join(process.cwd(), 'outputs', zipName);
-    const output = createWriteStream(zipPath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    if (normalizedFiles.length === 1 && usedOutputNames.size === 1) {
+      // Single file - provide direct download
+      const singleFileName = Array.from(usedOutputNames)[0] + (format === 'png' ? '.png' : '.jpg');
+      const finalPath = path.join(process.cwd(), 'outputs', singleFileName);
+      await fs.rename(path.join(outputDir, singleFileName), finalPath);
+      conversionStatus.zipPath = singleFileName;
+      // Cleanup temp dir
+      await fs.rm(outputDir, { recursive: true }).catch(() => {});
+    } else {
+      // Multiple files - zip them
+      const zipName = `converted_${Date.now()}.zip`;
+      const zipPath = path.join(process.cwd(), 'outputs', zipName);
+      const output = createWriteStream(zipPath);
+      const archiverFunc = typeof archiver === 'function' ? archiver : archiver.default;
+      const archive = archiverFunc('zip', { zlib: { level: 9 } });
 
-    await new Promise((resolve, reject) => {
-      output.on('close', resolve);
-      output.on('error', reject);
-      archive.on('error', reject);
-      archive.pipe(output);
-      archive.directory(outputDir, false);
-      archive.finalize();
-    });
+      await new Promise((resolve, reject) => {
+        output.on('close', resolve);
+        output.on('error', reject);
+        archive.on('error', reject);
+        archive.pipe(output);
+        archive.directory(outputDir, false);
+        archive.finalize();
+      });
 
-    conversionStatus.zipPath = zipName;
+      conversionStatus.zipPath = zipName;
+    }
   } catch (err) {
+    console.error('Conversion/Zip Error:', err);
     conversionStatus.error = err.message;
   } finally {
     conversionStatus.active = false;
