@@ -82,8 +82,12 @@ async function smartConvert(params) {
   if (params.format === 'jpg') {
     try {
       console.log(`Extracting embedded JPEG from ${params.inputPath}...`);
-      const success = await extractEmbeddedJpeg(params.inputPath, params.outputPath);
-      if (success) return;
+      const rawBuffer = await fs.readFile(params.inputPath);
+      const embeddedJpeg = extractEmbeddedJpeg(rawBuffer);
+      if (embeddedJpeg) {
+        await fs.writeFile(params.outputPath, embeddedJpeg);
+        return;
+      }
     } catch (err) {
       console.warn("In-app extraction failed:", err.message);
     }

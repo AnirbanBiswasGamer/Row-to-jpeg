@@ -1,20 +1,11 @@
-import fs from 'fs/promises';
-
 const MIN_EMBEDDED_JPEG_SIZE_BYTES = 64 * 1024;
 
 /**
  * Extracts the largest embedded JPEG from a RAW file (NEF, CR2, etc.)
  * This is a robust, "in-app" way to convert RAW to JPEG without external codecs.
  */
-export async function extractEmbeddedJpeg(inputPath, outputPath) {
-  const buffer = await fs.readFile(inputPath);
-  const embeddedJpeg = findLargestEmbeddedJpeg(buffer);
-
-  if (embeddedJpeg) {
-    await fs.writeFile(outputPath, embeddedJpeg);
-    return true;
-  }
-  return false;
+export function extractEmbeddedJpeg(buffer) {
+  return findLargestEmbeddedJpeg(buffer);
 }
 
 function findLargestEmbeddedJpeg(buffer) {
