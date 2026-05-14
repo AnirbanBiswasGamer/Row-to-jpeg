@@ -94,15 +94,18 @@ function App() {
 
       // 2. Fallback to our robust API-based PowerShell picker
       const res = await fetch(`${API_BASE}/api/pick-folder`);
-      const data = await res.json().catch((parseErr) => {
+      let data;
+      try {
+        data = await res.json();
+      } catch (parseErr) {
         console.warn('Failed to parse /api/pick-folder response JSON:', parseErr);
-        return {};
-      });
+        throw new Error('Invalid response from folder picker API');
+      }
       if (res.ok && assignPath(data.path || '')) {
         return;
       }
 
-      const reason = data?.error || data?.warning || (!res.ok ? `Server picker failed (HTTP ${res.status})` : 'No folder selected');
+      const reason = data?.error || data?.warning || (!res.ok ? `Server picker failed (HTTP ${res.status})` : 'No folder path returned from picker');
       alert(`Folder picker unavailable: ${reason}. You can type the full folder path manually.`);
     } catch (err) {
       console.error("Folder pick error:", err);
