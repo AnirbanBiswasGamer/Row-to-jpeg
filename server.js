@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { existsSync, createWriteStream, mkdirSync } from 'fs';
 import multer from 'multer';
-import { ZipArchive } from 'archiver';
+import archiver from 'archiver';
 
 // Ensure directories exist
 if (!existsSync('uploads')) mkdirSync('uploads');
@@ -17,7 +17,46 @@ const app = express();
 const port = 48211;
 
 // ImageMagick Path
-const MAGICK_PATH = `"C:\\Program Files\\ImageMagick-7.1.2-Q16\\magick.exe"`;
+const DEFAULT_MAGICK_PATH = process.platform === 'win32'
+  ? 'C:\\Program Files\\ImageMagick-7.1.2-Q16\\magick.exe'
+  : 'magick';
+const MAGICK_PATH = process.env.MAGICK_PATH || DEFAULT_MAGICK_PATH;
+
+function quoteCommandPart(value) {
+  if (!value) return '""';
+  return value.includes('"') ? `"${value.replaceAll('"', '\\"')}"` : `"${value}"`;
+}
+
+function getMagickCommand() {
+  return MAGICK_PATH.includes(' ') || MAGICK_PATH.includes('"')
+    ? quoteCommandPart(MAGICK_PATH.replaceAll('"', ''))
+    : MAGICK_PATH;
+}
+
+async function pickFolderNative() {
+  if (process.platform === 'win32') {
+    const psCommand = `
+      Add-Type -AssemblyName System.Windows.Forms;
+      $f = New-Object System.Windows.Forms.FolderBrowserDialog;
+      $f.Description = "Select a folder for Lumina RAW";
+      if($f.ShowDialog() -eq "OK"){ $f.SelectedPath }
+    `;
+    const { stdout } = await execPromise(`powershell -Command "${psCommand.replace(/\n/g, '')}"`);
+    return stdout.trim();
+  }
+
+  if (process.platform === 'darwin') {
+    const { stdout } = await execPromise(`osascript -e 'POSIX path of (choose folder with prompt "Select a folder for Lumina RAW")'`);
+    return stdout.trim();
+  }
+
+  if (process.platform === 'linux') {
+    const { stdout } = await execPromise('zenity --file-selection --directory 2>/dev/null || kdialog --getexistingdirectory 2>/dev/null || true');
+    return stdout.trim();
+  }
+
+  return '';
+}
 
 app.use(cors());
 app.use(express.json());
@@ -25,18 +64,8 @@ app.use(express.json());
 // --- Native Folder Picker (Windows) ---
 app.get('/api/pick-folder', async (req, res) => {
   try {
-    const psCommand = `
-      Add-Type -AssemblyName System.Windows.Forms;
-      $f = New-Object System.Windows.Forms.FolderBrowserDialog;
-      $f.Description = "Select a folder for Lumina RAW";
-      if($f.ShowDialog() -eq "OK"){ $f.SelectedPath }
-    `;
-    const { exec } = await import('child_process');
-    exec(`powershell -Command "${psCommand.replace(/\n/g, '')}"`, (err, stdout, stderr) => {
-      if (err) return res.status(500).json({ error: err.message });
-      const pickedPath = stdout.trim();
-      res.json({ path: pickedPath });
-    });
+    const pickedPath = await pickFolderNative();
+    res.json({ path: pickedPath || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -142,7 +171,7 @@ async function startLocalConversion(files, inputDir, outputDir, format, quality)
 
     try {
       const qFlag = format === 'jpg' ? `-quality ${quality || 100}` : '';
-      const cmd = `${MAGICK_PATH} "${inputPath}" -auto-orient -auto-level ${qFlag} "${outputPath}"`;
+      const cmd = `${getMagickCommand()} ${quoteCommandPart(inputPath)} -auto-orient -auto-level ${qFlag} ${quoteCommandPart(outputPath)}`;
       await execPromise(cmd);
       conversionStatus.logs.push(`Completed ${file}`);
     } catch (err) {
@@ -170,25 +199,40 @@ app.post('/api/convert-cloud', async (req, res) => {
   if (!files || files.length === 0) return res.status(400).json({ error: 'No files' });
   if (conversionStatus.active) return res.status(400).json({ error: 'Busy' });
 
+  const uploadsRoot = path.resolve(process.cwd(), 'uploads');
+  const normalizedFiles = files
+    .map(file => {
+      if (!file || typeof file.path !== 'string' || typeof file.originalname !== 'string') return null;
+      const resolvedPath = path.resolve(process.cwd(), file.path);
+      if (!(resolvedPath === uploadsRoot || resolvedPath.startsWith(`${uploadsRoot}${path.sep}`))) return null;
+      return { path: resolvedPath, originalname: path.basename(file.originalname) };
+    })
+    .filter(Boolean);
+
+  if (normalizedFiles.length !== files.length) {
+    return res.status(400).json({ error: 'Invalid upload session files' });
+  }
+
   resetStatus();
   conversionStatus.active = true;
-  conversionStatus.total = files.length;
+  conversionStatus.total = normalizedFiles.length;
   res.json({ message: 'Starting cloud conversion' });
 
   const outputDir = path.join(process.cwd(), 'outputs', Date.now().toString());
   await fs.mkdir(outputDir, { recursive: true });
 
   try {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    for (let i = 0; i < normalizedFiles.length; i++) {
+      const file = normalizedFiles[i];
       const ext = format === 'png' ? '.png' : '.jpg';
-      const outputPath = path.join(outputDir, file.originalname + ext);
+      const baseName = path.parse(file.originalname).name || `converted_${i + 1}`;
+      const outputPath = path.join(outputDir, `${baseName}${ext}`);
       
       conversionStatus.currentFile = file.originalname;
       conversionStatus.progress = i + 1;
 
       const qFlag = format === 'jpg' ? `-quality ${quality || 100}` : '';
-      const cmd = `${MAGICK_PATH} "${file.path}" -auto-orient -auto-level ${qFlag} "${outputPath}"`;
+      const cmd = `${getMagickCommand()} ${quoteCommandPart(file.path)} -auto-orient -auto-level ${qFlag} ${quoteCommandPart(outputPath)}`;
       await execPromise(cmd);
       conversionStatus.logs.push(`Completed ${file.originalname}`);
       
@@ -199,11 +243,16 @@ app.post('/api/convert-cloud', async (req, res) => {
     const zipName = `converted_${Date.now()}.zip`;
     const zipPath = path.join(process.cwd(), 'outputs', zipName);
     const output = createWriteStream(zipPath);
-    const archive = new ZipArchive({ zlib: { level: 9 } });
+    const archive = archiver('zip', { zlib: { level: 9 } });
 
-    archive.pipe(output);
-    archive.directory(outputDir, false);
-    await archive.finalize();
+    await new Promise((resolve, reject) => {
+      output.on('close', resolve);
+      output.on('error', reject);
+      archive.on('error', reject);
+      archive.pipe(output);
+      archive.directory(outputDir, false);
+      archive.finalize();
+    });
 
     conversionStatus.zipPath = zipName;
   } catch (err) {
