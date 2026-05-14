@@ -74,12 +74,14 @@ const RAW_EXTENSIONS = [
   '.ptx', '.pxn', '.qtk', '.raf', '.raw', '.rdc', '.rw2', '.rwl', '.rwz', '.sr2',
   '.srf', '.srw', '.sti', '.x3f'
 ];
+const CANON_RAW_EXTENSIONS = new Set(['.cr2', '.cr3', '.crw']);
 
 async function smartConvert(params) {
   const ext = path.extname(params.inputPath).toLowerCase();
   
   // 1. Try "In-App" JPEG extraction first for JPEG outputs only.
-  if (params.format === 'jpg') {
+  // Canon RAW previews can carry camera-style preview formatting, so skip embedded extraction.
+  if (params.format === 'jpg' && !CANON_RAW_EXTENSIONS.has(ext)) {
     try {
       console.log(`Extracting embedded JPEG from ${params.inputPath}...`);
       const rawBuffer = await fs.readFile(params.inputPath);
