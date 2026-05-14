@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDropzone } from 'react-dropzone';
+
+const API_BASE = 'http://127.0.0.1:48211';
 
 const BRANDS = [
   { id: 'all', name: 'Universal' },
@@ -20,16 +22,46 @@ function App() {
   const [quality, setQuality] = useState(90);
   const [status, setStatus] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadedFiles, setUploadedFiles] = useState(null);
+  const [showFooter, setShowFooter] = useState(true);
+
+  const changeMode = (newMode) => {
+    setMode(newMode);
+    handleClear(); // Clear everything when switching modes
+  };
   
   useEffect(() => {
-    const eventSource = new EventSource('/api/status');
-    eventSource.onmessage = (event) => setStatus(JSON.parse(event.data));
-    return () => eventSource.close();
+    // Disable right-click for native feel
+    const handleContextMenu = (e) => e.preventDefault();
+    document.addEventListener('contextmenu', handleContextMenu);
+
+    const eventSource = new EventSource(`${API_BASE}/api/status`);
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setStatus(data);
+      if (data.active || data.total > 0) setShowFooter(true);
+    };
+    
+    return () => {
+      document.removeEventListener('contextmenu', handleContextMenu);
+      eventSource.close();
+    };
   }, []);
+
+  const openExternal = async (url) => {
+    if (window.__TAURI_INTERNALS__) {
+      const { open } = await import('@tauri-apps/plugin-shell');
+      await open(url);
+    } else {
+      window.open(url, '_blank');
+    }
+  };
 
   const pickFolder = async (type) => {
     try {
-      const res = await fetch('/api/pick-folder');
+      const res = await fetch(`${API_BASE}/api/pick-folder`);
       const data = await res.json();
       if (data.path) {
         if (type === 'input') setInputDir(data.path);
@@ -39,7 +71,7 @@ function App() {
   };
 
   const handleStartLocal = async () => {
-    await fetch('/api/convert', {
+    await fetch(`${API_BASE}/api/convert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inputDir, outputDir, brand, format, quality })
@@ -50,17 +82,68 @@ function App() {
     onDrop: (files) => setSelectedFiles(files) 
   });
 
-  const handleUpload = async () => {
+  const handleUpload = () => {
+    if (selectedFiles.length === 0) {
+      alert("Please select files first!");
+      return;
+    }
+    setUploading(true);
+    setUploadProgress(0);
+
     const formData = new FormData();
     selectedFiles.forEach(file => formData.append('images', file));
-    formData.append('format', format);
-    formData.append('quality', quality);
-    await fetch('/api/upload', { method: 'POST', body: formData });
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/api/upload`, true);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        setUploadProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+
+    xhr.onload = () => {
+      try {
+        if (xhr.status === 200) {
+          const data = JSON.parse(xhr.responseText);
+          console.log('Upload success:', data);
+          setUploadedFiles(data.files);
+          setUploading(false);
+        } else {
+          console.error('Upload failed with status:', xhr.status);
+          setUploading(false);
+          alert('Upload failed. Please try again.');
+        }
+      } catch (err) {
+        console.error('Error parsing response:', err);
+        setUploading(false);
+      }
+    };
+
+    xhr.onerror = () => {
+      console.error('Upload error');
+      setUploading(false);
+    };
+
+    xhr.send(formData);
+  };
+
+  const handleStartCloud = async () => {
+    if (!uploadedFiles) return;
+    await fetch(`${API_BASE}/api/convert-cloud`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: uploadedFiles, format, quality })
+    });
+    setUploadedFiles(null); // Reset after starting
   };
 
   const handleClear = async () => {
-    await fetch('/api/clear', { method: 'POST' });
-    setStatus(null);
+    // Immediately clear local state to avoid flicker
+    setStatus({ active: false, total: 0, progress: 0, currentFile: '', zipPath: null });
+    setUploadedFiles(null);
+    setUploadProgress(0);
+    await fetch(`${API_BASE}/api/clear`, { method: 'POST' });
     setSelectedFiles([]);
   };
 
@@ -74,21 +157,21 @@ function App() {
         {/* Header */}
         <header className="flex justify-between items-center w-full px-gutter py-md bg-transparent">
           <div className="flex items-center gap-base">
-            <div className="text-headline-md font-bold text-on-surface bg-surface-container-highest rounded-full p-2 flex items-center justify-center w-12 h-12">
-              <span className="text-primary">L</span><span className="text-secondary">R</span>
+            <div className="bg-surface-container-highest rounded-full flex items-center justify-center w-12 h-12 overflow-hidden border border-outline-variant">
+              <img src="/favicon.png" alt="Lumina RAW" className="w-8 h-8 object-contain" />
             </div>
           </div>
 
           {/* Mode Toggle */}
           <div className="bg-surface-container-lowest p-xs rounded-xl flex items-center border border-outline-variant">
             <button 
-              onClick={() => setMode('local')}
+              onClick={() => changeMode('local')}
               className={`${mode === 'local' ? 'bg-surface-container-high text-on-surface' : 'text-on-surface-variant hover:text-secondary'} font-bold rounded-lg px-4 py-2 transition-all text-label-sm`}
             >
               Local Mode
             </button>
             <button 
-              onClick={() => setMode('upload')}
+              onClick={() => changeMode('upload')}
               className={`${mode === 'upload' ? 'bg-surface-container-high text-on-surface' : 'text-on-surface-variant hover:text-secondary'} font-bold rounded-lg px-4 py-2 transition-all text-label-sm`}
             >
               Upload Mode
@@ -203,21 +286,44 @@ function App() {
             </div>
 
             <button 
-              onClick={mode === 'local' ? handleStartLocal : handleUpload}
-              disabled={status?.active || (mode === 'local' && (!inputDir || !outputDir)) || (mode === 'upload' && selectedFiles.length === 0)}
-              className="gradient-button w-full py-md rounded-2xl flex items-center justify-center gap-base text-on-primary font-bold text-xl group mt-md disabled:opacity-50 disabled:scale-100"
+              onClick={() => {
+                if (mode === 'local') handleStartLocal();
+                else if (uploadedFiles) handleStartCloud();
+                else handleUpload();
+              }}
+              disabled={status?.active || uploading || (mode === 'local' && (!inputDir || !outputDir)) || (mode === 'upload' && selectedFiles.length === 0)}
+              className={`${uploadedFiles ? 'bg-secondary' : 'gradient-button'} w-full py-md rounded-2xl flex flex-col items-center justify-center gap-1 text-on-primary font-bold group mt-md disabled:opacity-50 disabled:scale-100 transition-all`}
             >
-              <span className="material-symbols-outlined text-[32px] group-hover:scale-110 transition-transform" style={{ fontVariationSettings: "'FILL' 1" }}>
-                {status?.active ? 'sync' : 'play_arrow'}
-              </span>
-              {status?.active ? 'CONVERTING...' : 'START CONVERSION'}
+              <div className="flex items-center gap-base">
+                <span className="material-symbols-outlined text-[32px] group-hover:scale-110 transition-transform" style={{ fontVariationSettings: "'FILL' 1" }}>
+                  {status?.active || uploading ? 'sync' : (uploadedFiles ? 'play_circle' : (mode === 'upload' ? 'cloud_upload' : 'play_arrow'))}
+                </span>
+                <span className="text-xl">
+                  {status?.active ? 'CONVERTING...' : 
+                   uploading ? `UPLOADING ${uploadProgress}%` : 
+                   uploadedFiles ? 'START CONVERSION' : 
+                   mode === 'upload' ? 'UPLOAD TO SERVER' : 'START CONVERSION'}
+                </span>
+              </div>
+              {uploading && (
+                <div className="w-48 h-1 bg-white/20 rounded-full mt-2 overflow-hidden">
+                  <div className="h-full bg-white transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
+                </div>
+              )}
             </button>
           </section>
         </div>
 
         {/* Progress Footer */}
-        {status && (status.active || status.total > 0) && (
-          <footer className="mt-auto px-gutter py-md bg-surface-container-lowest/50 border-t border-outline-variant/30">
+        {showFooter && status && (status.active || status.total > 0) && (
+          <footer className="mt-auto px-gutter py-md bg-surface-container-lowest/50 border-t border-outline-variant/30 relative">
+            <button 
+              onClick={() => setShowFooter(false)}
+              className="absolute top-2 right-2 text-on-surface-variant hover:text-on-surface transition-colors"
+              title="Dismiss"
+            >
+              <span className="material-symbols-outlined text-[18px]">close</span>
+            </button>
             <div className="flex justify-between items-end mb-sm">
               <div className="flex items-center gap-xs">
                 <span className="material-symbols-outlined text-secondary text-[20px]" style={{ fontVariationSettings: "'FILL' 1" }}>
@@ -228,17 +334,29 @@ function App() {
                 </span>
               </div>
               <div className="flex items-center gap-md">
-                {status.zipPath && (
-                  <a href={`/api/download/${status.zipPath}`} className="text-secondary hover:underline flex items-center gap-1 font-bold">
-                    <span className="material-symbols-outlined">download</span> Download
+                {status.zipPath ? (
+                  <a 
+                    href={`${API_BASE}/api/download/${status.zipPath}`} 
+                    download={status.zipPath}
+                    className="gradient-button px-gutter py-2 rounded-xl text-on-primary font-bold flex items-center gap-2 shadow-lg hover:scale-105 transition-all text-label-sm"
+                  >
+                    <span className="material-symbols-outlined text-[20px]">download</span> 
+                    DOWNLOAD RESULTS
                   </a>
+                ) : (
+                  isComplete && mode === 'local' && (
+                    <div className="text-secondary font-bold flex items-center gap-2 text-label-sm">
+                      <span className="material-symbols-outlined text-[20px]">check_circle</span>
+                      SAVED TO FOLDER
+                    </div>
+                  )
                 )}
                 {!status.active && (
-                  <button onClick={handleClear} className="text-error hover:text-error-container transition-colors">
+                  <button onClick={handleClear} className="p-2 text-error hover:bg-error/10 rounded-lg transition-colors ml-2" title="Clear Workspace">
                     <span className="material-symbols-outlined">delete</span>
                   </button>
                 )}
-                <span className="text-label-sm font-bold text-secondary">{Math.round(progressPercent)}%</span>
+                <span className="text-label-sm font-bold text-secondary ml-2">{Math.round(progressPercent)}%</span>
               </div>
             </div>
             <div className="h-1.5 w-full bg-surface-container-highest rounded-full overflow-hidden">
@@ -251,7 +369,12 @@ function App() {
         )}
 
         <p className="text-label-sm text-center py-4 opacity-50">
-          Made by <a href="https://www.aniplay.eu.org" target="_blank" rel="noopener noreferrer" className="text-secondary font-bold hover:underline">Anirban B.</a>
+          Made by <button 
+            onClick={() => openExternal('https://www.aniplay.eu.org')} 
+            className="text-secondary font-bold hover:underline bg-transparent border-none cursor-pointer"
+          >
+            Anirban B.
+          </button>
         </p>
       </main>
     </div>

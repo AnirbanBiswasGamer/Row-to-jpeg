@@ -66,6 +66,16 @@ let conversionStatus = {
   zipPath: null
 };
 
+function resetStatus() {
+  conversionStatus.active = false;
+  conversionStatus.progress = 0;
+  conversionStatus.total = 0;
+  conversionStatus.currentFile = '';
+  conversionStatus.logs = [];
+  conversionStatus.error = null;
+  conversionStatus.zipPath = null;
+}
+
 // --- Folder Browser API ---
 app.get('/api/browse', async (req, res) => {
   const currentPath = req.query.path || process.cwd();
@@ -102,7 +112,9 @@ app.post('/api/convert', async (req, res) => {
     
     if (rawFiles.length === 0) return res.status(400).json({ error: 'No RAW files' });
 
-    conversionStatus = { active: true, progress: 0, total: rawFiles.length, currentFile: '', logs: [], error: null };
+    resetStatus();
+    conversionStatus.active = true;
+    conversionStatus.total = rawFiles.length;
     res.json({ message: 'Started' });
 
     startLocalConversion(rawFiles, inputDir, outputDir, format, quality);
@@ -141,15 +153,27 @@ async function startLocalConversion(files, inputDir, outputDir, format, quality)
   conversionStatus.currentFile = 'Done';
 }
 
-// --- Upload & Convert API ---
+// --- Cloud Upload (Stage 1) ---
 app.post('/api/upload', upload.array('images'), async (req, res) => {
-  const { format, quality } = req.body;
   const files = req.files;
-
+  console.log(`Received ${files ? files.length : 0} files for upload`);
   if (!files || files.length === 0) return res.status(400).json({ error: 'No files' });
+  
+  // Return the temp filenames so the frontend can trigger conversion later
+  const sessionFiles = files.map(f => ({ path: f.path, originalname: f.originalname }));
+  res.json({ message: 'Uploaded', files: sessionFiles });
+});
 
-  conversionStatus = { active: true, progress: 0, total: files.length, currentFile: '', logs: [], error: null, zipPath: null };
-  res.json({ message: 'Upload received, starting conversion' });
+// --- Cloud Convert (Stage 2) ---
+app.post('/api/convert-cloud', async (req, res) => {
+  const { files, format, quality } = req.body;
+  if (!files || files.length === 0) return res.status(400).json({ error: 'No files' });
+  if (conversionStatus.active) return res.status(400).json({ error: 'Busy' });
+
+  resetStatus();
+  conversionStatus.active = true;
+  conversionStatus.total = files.length;
+  res.json({ message: 'Starting cloud conversion' });
 
   const outputDir = path.join(process.cwd(), 'outputs', Date.now().toString());
   await fs.mkdir(outputDir, { recursive: true });
@@ -169,10 +193,9 @@ app.post('/api/upload', upload.array('images'), async (req, res) => {
       conversionStatus.logs.push(`Completed ${file.originalname}`);
       
       // Cleanup uploaded temp file
-      await fs.unlink(file.path);
+      await fs.unlink(file.path).catch(() => {});
     }
 
-    // Zip the results
     const zipName = `converted_${Date.now()}.zip`;
     const zipPath = path.join(process.cwd(), 'outputs', zipName);
     const output = createWriteStream(zipPath);
@@ -193,6 +216,7 @@ app.post('/api/upload', upload.array('images'), async (req, res) => {
 
 app.get('/api/download/:zipName', (req, res) => {
   const filePath = path.join(process.cwd(), 'outputs', req.params.zipName);
+  res.setHeader('Content-Disposition', `attachment; filename="${req.params.zipName}"`);
   res.download(filePath);
 });
 
@@ -211,7 +235,7 @@ app.post('/api/clear', async (req, res) => {
     }
     
     // Reset global status
-    conversionStatus = { active: false, progress: 0, total: 0, currentFile: '', logs: [], error: null, zipPath: null };
+    resetStatus();
     
     res.json({ message: 'Workspace cleared' });
   } catch (err) {
