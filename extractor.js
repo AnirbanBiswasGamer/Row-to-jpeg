@@ -1,4 +1,5 @@
 const MIN_EMBEDDED_JPEG_SIZE_64KB = 64 * 1024;
+const JPEG_SOI_MARKER = Buffer.from([0xFF, 0xD8]);
 
 /**
  * Extracts the largest embedded JPEG from a RAW file (NEF, CR2, etc.)
@@ -11,9 +12,7 @@ export function extractEmbeddedJpeg(buffer) {
 function findLargestEmbeddedJpeg(buffer) {
   let bestJpeg = null;
 
-  for (let start = 0; start < buffer.length - 1; start += 1) {
-    if (buffer[start] !== 0xFF || buffer[start + 1] !== 0xD8) continue;
-
+  for (let start = buffer.indexOf(JPEG_SOI_MARKER); start !== -1; start = buffer.indexOf(JPEG_SOI_MARKER, start + 2)) {
     const end = findJpegEnd(buffer, start);
     if (end === -1) continue;
 
@@ -68,7 +67,7 @@ function findJpegEnd(buffer, start) {
     if (marker === 0xDA) {
       offset = markerOffset + 1;
 
-      if (offset + 2 >= buffer.length) return -1;
+      if (offset + 2 > buffer.length) return -1;
 
       const segmentLength = buffer.readUInt16BE(offset);
       if (segmentLength < 2 || offset + segmentLength > buffer.length) return -1;
@@ -96,7 +95,7 @@ function findJpegEnd(buffer, start) {
       continue;
     }
 
-    if (markerOffset + 2 >= buffer.length) return -1;
+    if (markerOffset + 3 > buffer.length) return -1;
     const segmentLength = buffer.readUInt16BE(markerOffset + 1);
     if (segmentLength < 2) return -1;
 
