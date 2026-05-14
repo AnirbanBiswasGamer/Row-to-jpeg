@@ -30,6 +30,7 @@ const RESERVED_WINDOWS_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM
 function normalizeQuality(quality, fallback = 90) {
   const num = parseInt(quality, 10);
   if (!Number.isFinite(num)) return fallback;
+  // Keep JPEG quality in 1..100 to match encoder expectations.
   return Math.min(100, Math.max(1, num));
 }
 
@@ -42,8 +43,8 @@ async function convertWithWIC({ inputPath, outputPath, format, quality }) {
     Add-Type -AssemblyName PresentationCore, PresentationFramework;
     $stream = New-Object System.IO.FileStream('${safeInputPath}', [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read);
     try {
-    # PreservePixelFormat + OnLoad avoids delayed/lazy decode issues seen with some RAW->PNG decodes.
-    # OnLoad fully decodes before stream close, reducing corruption risk on certain camera RAW formats.
+    # PreservePixelFormat + OnLoad avoids delayed/lazy decode issues seen in some RAW decoders.
+    # OnLoad fully decodes before stream close, improving reliability for WIC JPEG conversion.
     $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat, [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad);
     if ($decoder.Frames.Count -gt 0) {
       $frame = $decoder.Frames[0];
@@ -61,7 +62,8 @@ async function convertWithWIC({ inputPath, outputPath, format, quality }) {
     }
   `;
   
-  await execFilePromise('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCommand]);
+  const inlinePsCommand = psCommand.replace(/\r?\n/g, ' ').trim();
+  await execFilePromise('powershell', ['-NoProfile', '-NonInteractive', '-Command', inlinePsCommand]);
 }
 
 async function convertWithMagick({ inputPath, outputPath, format, quality }) {
