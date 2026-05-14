@@ -13,7 +13,8 @@ function terminateChildren() {
 
 function runScript(scriptName) {
   const child = spawn(npmCommand, ['run', scriptName], {
-    stdio: 'inherit'
+    stdio: 'inherit',
+    shell: true
   });
   children.push(child);
   return child;
