@@ -14,13 +14,33 @@ if (!existsSync('outputs')) mkdirSync('outputs');
 
 const execPromise = promisify(exec);
 const app = express();
-const port = 3001;
+const port = 48211;
 
 // ImageMagick Path
 const MAGICK_PATH = `"C:\\Program Files\\ImageMagick-7.1.2-Q16\\magick.exe"`;
 
 app.use(cors());
 app.use(express.json());
+
+// --- Native Folder Picker (Windows) ---
+app.get('/api/pick-folder', async (req, res) => {
+  try {
+    const psCommand = `
+      Add-Type -AssemblyName System.Windows.Forms;
+      $f = New-Object System.Windows.Forms.FolderBrowserDialog;
+      $f.Description = "Select a folder for Lumina RAW";
+      if($f.ShowDialog() -eq "OK"){ $f.SelectedPath }
+    `;
+    const { exec } = await import('child_process');
+    exec(`powershell -Command "${psCommand.replace(/\n/g, '')}"`, (err, stdout, stderr) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const pickedPath = stdout.trim();
+      res.json({ path: pickedPath });
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Setup storage for uploads
 const upload = multer({ 
@@ -175,6 +195,56 @@ app.get('/api/download/:zipName', (req, res) => {
   const filePath = path.join(process.cwd(), 'outputs', req.params.zipName);
   res.download(filePath);
 });
+
+// --- Workspace Cleanup API ---
+app.post('/api/clear', async (req, res) => {
+  try {
+    const uploadFiles = await fs.readdir('uploads');
+    const outputFiles = await fs.readdir('outputs');
+    
+    for (const f of uploadFiles) await fs.unlink(path.join('uploads', f)).catch(() => {});
+    for (const f of outputFiles) {
+      const p = path.join('outputs', f);
+      const stat = await fs.stat(p);
+      if (stat.isDirectory()) await fs.rm(p, { recursive: true }).catch(() => {});
+      else await fs.unlink(p).catch(() => {});
+    }
+    
+    // Reset global status
+    conversionStatus = { active: false, progress: 0, total: 0, currentFile: '', logs: [], error: null, zipPath: null };
+    
+    res.json({ message: 'Workspace cleared' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Auto-Cleanup Task (Every Hour) ---
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
+const MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
+
+setInterval(async () => {
+  console.log("Running auto-cleanup...");
+  const now = Date.now();
+  const dirs = ['uploads', 'outputs'];
+  
+  for (const dir of dirs) {
+    try {
+      const files = await fs.readdir(dir);
+      for (const file of files) {
+        const filePath = path.join(dir, file);
+        const stats = await fs.stat(filePath);
+        if (now - stats.mtimeMs > MAX_AGE) {
+          console.log(`Auto-deleting old file: ${file}`);
+          if (stats.isDirectory()) await fs.rm(filePath, { recursive: true }).catch(() => {});
+          else await fs.unlink(filePath).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.error(`Cleanup error in ${dir}:`, err);
+    }
+  }
+}, CLEANUP_INTERVAL);
 
 app.get('/api/status', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');

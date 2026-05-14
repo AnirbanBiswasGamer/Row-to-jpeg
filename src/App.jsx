@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, FolderOpen, Play, CheckCircle, AlertCircle, Loader2, Info, Upload, Download, ChevronRight, Home, ChevronLeft, Sliders, Droplets } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 
 const BRANDS = [
-  { id: 'all', name: 'Universal', color: '#7000ff' },
-  { id: 'sony', name: 'Sony', color: '#0033cc' },
-  { id: 'canon', name: 'Canon', color: '#cc0000' },
-  { id: 'nikon', name: 'Nikon', color: '#ffcc00' },
+  { id: 'all', name: 'Universal' },
+  { id: 'sony', name: 'Sony' },
+  { id: 'canon', name: 'Canon' },
+  { id: 'nikon', name: 'Nikon' },
 ];
+
+const isTauri = !!window.__TAURI_INTERNALS__;
 
 function App() {
   const [mode, setMode] = useState('local');
@@ -18,35 +19,31 @@ function App() {
   const [format, setFormat] = useState('jpg');
   const [quality, setQuality] = useState(90);
   const [status, setStatus] = useState(null);
-  const [error, setError] = useState('');
-  const [showPicker, setShowPicker] = useState(null);
-  const [browseData, setBrowseData] = useState({ items: [], currentPath: '' });
   const [selectedFiles, setSelectedFiles] = useState([]);
   
-  const logEndRef = useRef(null);
-
   useEffect(() => {
     const eventSource = new EventSource('/api/status');
     eventSource.onmessage = (event) => setStatus(JSON.parse(event.data));
     return () => eventSource.close();
   }, []);
 
-  const fetchDir = async (path = '') => {
+  const pickFolder = async (type) => {
     try {
-      const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+      const res = await fetch('/api/pick-folder');
       const data = await res.json();
-      setBrowseData(data);
+      if (data.path) {
+        if (type === 'input') setInputDir(data.path);
+        else setOutputDir(data.path);
+      }
     } catch (err) { console.error(err); }
   };
 
   const handleStartLocal = async () => {
-    setError('');
-    const res = await fetch('/api/convert', {
+    await fetch('/api/convert', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inputDir, outputDir, brand, format, quality })
     });
-    if (!res.ok) setError((await res.json()).error);
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
@@ -58,182 +55,206 @@ function App() {
     selectedFiles.forEach(file => formData.append('images', file));
     formData.append('format', format);
     formData.append('quality', quality);
-    const res = await fetch('/api/upload', { method: 'POST', body: formData });
-    if (!res.ok) setError((await res.json()).error);
+    await fetch('/api/upload', { method: 'POST', body: formData });
   };
 
-  const progressPercent = status ? (status.progress / status.total) * 100 : 0;
+  const handleClear = async () => {
+    await fetch('/api/clear', { method: 'POST' });
+    setStatus(null);
+    setSelectedFiles([]);
+  };
+
+  const progressPercent = (status && status.total > 0) ? (status.progress / status.total) * 100 : 0;
+  const isComplete = status && !status.active && status.total > 0;
 
   return (
-    <div className="app-container fade-in">
-      <div className="liquid-bg"></div>
-      <div className="floating-orb" style={{ top: '10%', left: '10%', width: '300px', height: '300px', background: 'var(--accent-cyan)' }}></div>
-      <div className="floating-orb" style={{ bottom: '10%', right: '10%', width: '400px', height: '400px', background: 'var(--accent-magenta)' }}></div>
-
-      <header className="title-container">
-        <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ duration: 1, type: 'spring' }}>
-          <h1 className="main-title">LUMINA <span style={{ color: 'var(--accent-cyan)' }}>RAW</span></h1>
-          <p style={{ color: 'var(--text-muted)', marginTop: '0.5rem' }}>Next-Gen Liquid Glass Conversion</p>
-        </motion.div>
+    <div className="flex flex-col items-center justify-center min-h-screen p-gutter">
+      <main className="w-full max-w-[860px] glass-card rounded-[2rem] overflow-hidden flex flex-col fade-in">
         
-        <div className="mode-pill">
-          <button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}>Local Station</button>
-          <button className={mode === 'upload' ? 'active' : ''} onClick={() => setMode('upload')}>Cloud Portal</button>
-        </div>
-      </header>
+        {/* Header */}
+        <header className="flex justify-between items-center w-full px-gutter py-md bg-transparent">
+          <div className="flex items-center gap-base">
+            <div className="text-headline-md font-bold text-on-surface bg-surface-container-highest rounded-full p-2 flex items-center justify-center w-12 h-12">
+              <span className="text-primary">L</span><span className="text-secondary">R</span>
+            </div>
+          </div>
 
-      <motion.div className="liquid-glass refract-border" style={{ padding: '3rem' }} layout>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3rem' }}>
+          {/* Mode Toggle */}
+          <div className="bg-surface-container-lowest p-xs rounded-xl flex items-center border border-outline-variant">
+            <button 
+              onClick={() => setMode('local')}
+              className={`${mode === 'local' ? 'bg-surface-container-high text-on-surface' : 'text-on-surface-variant hover:text-secondary'} font-bold rounded-lg px-4 py-2 transition-all text-label-sm`}
+            >
+              Local Mode
+            </button>
+            <button 
+              onClick={() => setMode('upload')}
+              className={`${mode === 'upload' ? 'bg-surface-container-high text-on-surface' : 'text-on-surface-variant hover:text-secondary'} font-bold rounded-lg px-4 py-2 transition-all text-label-sm`}
+            >
+              Upload Mode
+            </button>
+          </div>
+          </header>
+
+        {/* Content */}
+        <div className="p-gutter grid grid-cols-1 md:grid-cols-2 gap-xl">
           
-          <div className="settings-panel">
-            <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: '1.5rem' }}>
-              <Sliders size={20} /> Parameters
-            </h3>
-            
-            <div className="input-group">
-              <label>Output Alchemy</label>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <select className="glass-input" value={format} onChange={e => setFormat(e.target.value)}>
-                  <option value="jpg">Superior JPEG</option>
-                  <option value="png">Eternal PNG</option>
-                </select>
-              </div>
+          {/* Settings Section */}
+          <section className="space-y-lg">
+            <div className="flex items-center gap-sm">
+              <span className="material-symbols-outlined text-primary">tune</span>
+              <h2 className="text-headline-md text-on-surface font-semibold">Settings</h2>
             </div>
 
-            {format === 'jpg' && (
-              <div className="input-group">
-                <label>Purity Index ({quality}%)</label>
-                <input type="range" className="liquid-range" min="1" max="100" value={quality} onChange={e => setQuality(e.target.value)} />
+            <div className="space-y-md">
+              <div className="space-y-base">
+                <label className="text-label-sm text-outline">Output Format</label>
+                <div className="relative">
+                  <select 
+                    className="w-full bg-surface-container-low border border-outline-variant rounded-xl px-md py-sm text-on-surface appearance-none focus:border-secondary focus:ring-1 focus:ring-secondary transition-all"
+                    value={format}
+                    onChange={(e) => setFormat(e.target.value)}
+                  >
+                    <option value="jpg">JPEG (High Quality)</option>
+                    <option value="png">PNG (Lossless)</option>
+                  </select>
+                  <span className="material-symbols-outlined absolute right-md top-1/2 -translate-y-1/2 pointer-events-none text-outline">expand_more</span>
+                </div>
               </div>
-            )}
 
-            <div className="input-group">
-              <label>Refraction Profile</label>
-              <div className="brand-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
-                {BRANDS.map(b => (
-                  <button key={b.id} className={`brand-btn ${brand === b.id ? 'active' : ''}`} onClick={() => setBrand(b.id)}
-                    style={brand === b.id ? { backgroundColor: b.color, borderColor: b.color } : {}}>
-                    {b.name}
-                  </button>
-                ))}
+              {format === 'jpg' && (
+                <div className="space-y-base">
+                  <label className="text-label-sm text-outline">JPEG Quality ({quality}%)</label>
+                  <div className="py-sm">
+                    <input 
+                      type="range" 
+                      min="1" max="100" 
+                      value={quality} 
+                      onChange={(e) => setQuality(e.target.value)}
+                      className="cursor-pointer"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-base">
+                <label className="text-label-sm text-outline">Camera Brand</label>
+                <div className="flex flex-wrap gap-sm">
+                  {BRANDS.map(b => (
+                    <button 
+                      key={b.id}
+                      onClick={() => setBrand(b.id)}
+                      className={`px-md py-sm rounded-lg text-label-sm font-bold transition-all ${
+                        brand === b.id 
+                        ? 'bg-primary-container text-on-primary-container shadow-lg shadow-primary/20 scale-105' 
+                        : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-bright'
+                      }`}
+                    >
+                      {b.name}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+          </section>
 
-          <div className="action-panel">
-            <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: '1.5rem' }}>
-              <Droplets size={20} /> Essence Source
-            </h3>
+          {/* Selection Section */}
+          <section className="space-y-lg flex flex-col">
+            <div className="flex items-center gap-sm">
+              <span className="material-symbols-outlined text-secondary">folder_open</span>
+              <h2 className="text-headline-md text-on-surface font-semibold">File Selection</h2>
+            </div>
 
-            {mode === 'local' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                <div className="input-group">
-                  <label>Input Path</label>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <input className="glass-input" value={inputDir} onChange={e => setInputDir(e.target.value)} placeholder="C:\...\RAW" />
-                    <button className="icon-btn" onClick={() => { setShowPicker('input'); fetchDir(inputDir); }}><FolderOpen /></button>
+            <div className="space-y-md flex-grow">
+              {mode === 'local' ? (
+                <>
+                  <div className="space-y-base">
+                    <label className="text-label-sm text-outline">Input Path</label>
+                    <div className="flex gap-sm">
+                      <div className="flex-grow bg-surface-container-low border border-outline-variant rounded-xl px-md py-sm text-on-surface-variant truncate flex items-center min-h-[44px]">
+                        {inputDir || "Select RAW folder..."}
+                      </div>
+                      <button onClick={() => pickFolder('input')} className="p-sm bg-surface-container-high border border-outline-variant rounded-xl text-secondary hover:bg-secondary-container hover:text-on-secondary-container transition-all">
+                        <span className="material-symbols-outlined">folder</span>
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <div className="input-group">
-                  <label>Output Path</label>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <input className="glass-input" value={outputDir} onChange={e => setOutputDir(e.target.value)} placeholder="C:\...\JPEG" />
-                    <button className="icon-btn" onClick={() => { setShowPicker('output'); fetchDir(outputDir); }}><FolderOpen /></button>
+                  <div className="space-y-base">
+                    <label className="text-label-sm text-outline">Output Path</label>
+                    <div className="flex gap-sm">
+                      <div className="flex-grow bg-surface-container-low border border-outline-variant rounded-xl px-md py-sm text-on-surface-variant truncate flex items-center min-h-[44px]">
+                        {outputDir || "Select output folder..."}
+                      </div>
+                      <button onClick={() => pickFolder('output')} className="p-sm bg-surface-container-high border border-outline-variant rounded-xl text-secondary hover:bg-secondary-container hover:text-on-secondary-container transition-all">
+                        <span className="material-symbols-outlined">folder</span>
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <button className="btn-liquid" onClick={handleStartLocal} disabled={status?.active || !inputDir || !outputDir}>
-                  {status?.active ? <Loader2 className="animate-spin" /> : <Play fill="currentColor" />}
-                  Ignite Conversion
-                </button>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                <div {...getRootProps()} className={`dropzone liquid-glass ${isDragActive ? 'active' : ''}`} 
-                  style={{ flex: 1, borderStyle: 'dashed', borderRadius: '24px', padding: '2rem' }}>
+                </>
+              ) : (
+                <div {...getRootProps()} className={`flex-grow border-2 border-dashed rounded-2xl flex flex-col items-center justify-center p-md transition-all ${isDragActive ? 'border-secondary bg-secondary/10' : 'border-outline-variant hover:border-secondary'}`}>
                   <input {...getInputProps()} />
-                  <Upload size={32} style={{ color: 'var(--accent-cyan)', marginBottom: '1rem' }} />
-                  <p style={{ fontSize: '0.9rem' }}>{selectedFiles.length > 0 ? `${selectedFiles.length} files prepared` : "Infuse RAW files here"}</p>
+                  <span className="material-symbols-outlined text-secondary text-4xl mb-2">cloud_upload</span>
+                  <p className="text-body-md text-on-surface-variant text-center">
+                    {selectedFiles.length > 0 ? `${selectedFiles.length} files selected` : "Drop RAW files here or click to browse"}
+                  </p>
                 </div>
-                <button className="btn-liquid" style={{ marginTop: '1.5rem' }} onClick={handleUpload} disabled={status?.active || selectedFiles.length === 0}>
-                  {status?.active ? <Loader2 className="animate-spin" /> : <Upload />}
-                  Vaporize to Cloud
-                </button>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+
+            <button 
+              onClick={mode === 'local' ? handleStartLocal : handleUpload}
+              disabled={status?.active || (mode === 'local' && (!inputDir || !outputDir)) || (mode === 'upload' && selectedFiles.length === 0)}
+              className="gradient-button w-full py-md rounded-2xl flex items-center justify-center gap-base text-on-primary font-bold text-xl group mt-md disabled:opacity-50 disabled:scale-100"
+            >
+              <span className="material-symbols-outlined text-[32px] group-hover:scale-110 transition-transform" style={{ fontVariationSettings: "'FILL' 1" }}>
+                {status?.active ? 'sync' : 'play_arrow'}
+              </span>
+              {status?.active ? 'CONVERTING...' : 'START CONVERSION'}
+            </button>
+          </section>
         </div>
 
-        {status && (status.active || status.logs.length > 0) && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="progress-section">
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <span style={{ fontWeight: 800 }}>{status.currentFile}</span>
-              <span style={{ color: 'var(--accent-cyan)' }}>{Math.round(progressPercent)}%</span>
+        {/* Progress Footer */}
+        {status && (status.active || status.total > 0) && (
+          <footer className="mt-auto px-gutter py-md bg-surface-container-lowest/50 border-t border-outline-variant/30">
+            <div className="flex justify-between items-end mb-sm">
+              <div className="flex items-center gap-xs">
+                <span className="material-symbols-outlined text-secondary text-[20px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+                  {status.active ? 'sync' : (isComplete ? 'check_circle' : 'hourglass_empty')}
+                </span>
+                <span className="text-body-md font-bold text-on-surface truncate max-w-[300px]">
+                  {status.active ? `Processing: ${status.currentFile}` : (isComplete ? 'Conversion Complete' : 'Ready to start')}
+                </span>
+              </div>
+              <div className="flex items-center gap-md">
+                {status.zipPath && (
+                  <a href={`/api/download/${status.zipPath}`} className="text-secondary hover:underline flex items-center gap-1 font-bold">
+                    <span className="material-symbols-outlined">download</span> Download
+                  </a>
+                )}
+                {!status.active && (
+                  <button onClick={handleClear} className="text-error hover:text-error-container transition-colors">
+                    <span className="material-symbols-outlined">delete</span>
+                  </button>
+                )}
+                <span className="text-label-sm font-bold text-secondary">{Math.round(progressPercent)}%</span>
+              </div>
             </div>
-            <div className="liquid-progress-bg"><div className="liquid-progress-fill" style={{ width: `${progressPercent}%` }}></div></div>
-            
-            {status.zipPath && (
-              <a href={`/api/download/${status.zipPath}`} className="download-btn" style={{ background: 'linear-gradient(90deg, #00f2ff, #7000ff)' }}>
-                <Download size={18} /> Retrieve Essence (.zip)
-              </a>
-            )}
-          </motion.div>
+            <div className="h-1.5 w-full bg-surface-container-highest rounded-full overflow-hidden">
+              <div 
+                className="h-full progress-gradient rounded-full transition-all duration-500" 
+                style={{ width: `${progressPercent}%` }}
+              ></div>
+            </div>
+          </footer>
         )}
-      </motion.div>
 
-      {/* Modal Picker */}
-      <AnimatePresence>
-        {showPicker && (
-          <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <motion.div className="modal-content liquid-glass refract-border" style={{ padding: '2.5rem' }} initial={{ y: 100, scale: 0.9 }} animate={{ y: 0, scale: 1 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2rem' }}>
-                <h3 style={{ margin: 0 }}>Liquid Navigator</h3>
-                <button onClick={() => setShowPicker(null)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>✕</button>
-              </div>
-              <div className="breadcrumb">
-                <button onClick={() => fetchDir('C:\\')}><Home size={14} /></button>
-                {browseData.parent && <button onClick={() => fetchDir(browseData.parent)}><ChevronLeft size={14} /> Back</button>}
-                <span style={{ marginLeft: 'auto', opacity: 0.5 }}>{browseData.currentPath}</span>
-              </div>
-              <div className="browser-list" style={{ height: '300px' }}>
-                {browseData.items.map(item => (
-                  <div key={item.path} className={`browser-item ${item.isDir ? 'dir' : 'file'}`} onClick={() => item.isDir && fetchDir(item.path)}>
-                    {item.isDir ? <FolderOpen size={16} color="var(--accent-violet)" /> : <Camera size={16} color="var(--text-muted)" />}
-                    <span>{item.name}</span>
-                    {item.isDir && <ChevronRight size={14} className="ml-auto" />}
-                  </div>
-                ))}
-              </div>
-              <button className="btn-liquid" style={{ padding: '1rem' }} onClick={() => {
-                if (showPicker === 'input') setInputDir(browseData.currentPath);
-                else setOutputDir(browseData.currentPath);
-                setShowPicker(null);
-              }}>Condense Selection</button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <style>{`
-        .liquid-range {
-          -webkit-appearance: none;
-          width: 100%;
-          height: 6px;
-          background: rgba(255,255,255,0.1);
-          border-radius: 3px;
-          outline: none;
-        }
-        .liquid-range::-webkit-slider-thumb {
-          -webkit-appearance: none;
-          width: 20px;
-          height: 20px;
-          border-radius: 50%;
-          background: var(--accent-cyan);
-          cursor: pointer;
-          box-shadow: 0 0 10px var(--accent-cyan);
-        }
-      `}</style>
+        <p className="text-label-sm text-center py-4 opacity-50">
+          Made by <a href="https://www.aniplay.eu.org" target="_blank" rel="noopener noreferrer" className="text-secondary font-bold hover:underline">Anirban B.</a>
+        </p>
+      </main>
     </div>
   );
 }
-
 export default App;
