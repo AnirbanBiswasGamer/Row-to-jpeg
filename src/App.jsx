@@ -265,7 +265,7 @@ function App() {
                       type="range" 
                       min="1" max="100" 
                       value={quality} 
-                      onChange={(e) => setQuality(e.target.value)}
+                      onChange={(e) => setQuality(parseInt(e.target.value, 10))}
                       className="cursor-pointer"
                     />
                   </div>
