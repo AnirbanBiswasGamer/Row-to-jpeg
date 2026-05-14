@@ -68,6 +68,13 @@ function App() {
   };
 
   const pickFolder = async (type) => {
+    const assignPath = (selectedPath) => {
+      if (!selectedPath || !selectedPath.trim()) return false;
+      if (type === 'input') setInputDir(selectedPath.trim());
+      else setOutputDir(selectedPath.trim());
+      return true;
+    };
+
     try {
       // 1. Try native Tauri dialog if available
       if (isTauri) {
@@ -76,8 +83,7 @@ function App() {
           const selected = await open({ directory: true, multiple: false });
           if (selected) {
             const path = Array.isArray(selected) ? selected[0] : selected;
-            if (type === 'input') setInputDir(path);
-            else setOutputDir(path);
+            assignPath(path);
             return;
           }
         } catch (tauriErr) {
@@ -88,15 +94,22 @@ function App() {
 
       // 2. Fallback to our robust API-based PowerShell picker
       const res = await fetch(`${API_BASE}/api/pick-folder`);
-      if (!res.ok) throw new Error(`Server picker failed (HTTP ${res.status})`);
-      const data = await res.json();
-      if (data.path) {
-        if (type === 'input') setInputDir(data.path);
-        else setOutputDir(data.path);
+      let data;
+      try {
+        data = await res.json();
+      } catch (parseErr) {
+        console.warn('Failed to parse /api/pick-folder response JSON:', parseErr);
+        throw new Error('Invalid response from folder picker API');
       }
+      if (res.ok && assignPath(data.path || '')) {
+        return;
+      }
+
+      const reason = data?.error || data?.warning || (!res.ok ? `Server picker failed (HTTP ${res.status})` : 'No folder path returned from picker');
+      alert(`Folder picker unavailable: ${reason}. You can type the full folder path manually.`);
     } catch (err) {
       console.error("Folder pick error:", err);
-      alert(`Connection Error: Ensure the background server is running. ${err.message}`);
+      alert(`Connection Error: Ensure the background server is running. ${err.message}. You can also type the full folder path manually.`);
     }
   };
 
@@ -297,9 +310,13 @@ function App() {
                   <div className="space-y-base">
                     <label className="text-label-sm text-outline">Input Path</label>
                     <div className="flex gap-sm">
-                      <div className="flex-grow bg-surface-container-low border border-outline-variant rounded-xl px-md py-sm text-on-surface-variant truncate flex items-center min-h-[44px]">
-                        {inputDir || "Select RAW folder..."}
-                      </div>
+                      <input
+                        type="text"
+                        value={inputDir}
+                        onChange={(e) => setInputDir(e.target.value)}
+                        placeholder="Select RAW folder..."
+                        className="flex-grow bg-surface-container-low border border-outline-variant rounded-xl px-md py-sm text-on-surface min-h-[44px] focus:border-secondary focus:ring-1 focus:ring-secondary transition-all"
+                      />
                       <button onClick={() => pickFolder('input')} className="p-sm bg-surface-container-high border border-outline-variant rounded-xl text-secondary hover:bg-secondary-container hover:text-on-secondary-container transition-all">
                         <span className="material-symbols-outlined">folder</span>
                       </button>
@@ -308,9 +325,13 @@ function App() {
                   <div className="space-y-base">
                     <label className="text-label-sm text-outline">Output Path</label>
                     <div className="flex gap-sm">
-                      <div className="flex-grow bg-surface-container-low border border-outline-variant rounded-xl px-md py-sm text-on-surface-variant truncate flex items-center min-h-[44px]">
-                        {outputDir || "Select output folder..."}
-                      </div>
+                      <input
+                        type="text"
+                        value={outputDir}
+                        onChange={(e) => setOutputDir(e.target.value)}
+                        placeholder="Select output folder..."
+                        className="flex-grow bg-surface-container-low border border-outline-variant rounded-xl px-md py-sm text-on-surface min-h-[44px] focus:border-secondary focus:ring-1 focus:ring-secondary transition-all"
+                      />
                       <button onClick={() => pickFolder('output')} className="p-sm bg-surface-container-high border border-outline-variant rounded-xl text-secondary hover:bg-secondary-container hover:text-on-secondary-container transition-all">
                         <span className="material-symbols-outlined">folder</span>
                       </button>
