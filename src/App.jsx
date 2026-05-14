@@ -2,8 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDropzone } from 'react-dropzone';
 
-const API_BASE = 'http://127.0.0.1:48211';
-
 const BRANDS = [
   { id: 'all', name: 'Universal' },
   { id: 'sony', name: 'Sony' },
@@ -12,6 +10,7 @@ const BRANDS = [
 ];
 
 const isTauri = !!window.__TAURI_INTERNALS__;
+const API_BASE = isTauri ? 'http://127.0.0.1:48211' : '';
 
 function App() {
   const [mode, setMode] = useState('local');
@@ -61,21 +60,40 @@ function App() {
 
   const pickFolder = async (type) => {
     try {
+      if (isTauri) {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const selected = await open({ directory: true, multiple: false });
+        if (typeof selected === 'string' && selected.length > 0) {
+          if (type === 'input') setInputDir(selected);
+          else setOutputDir(selected);
+        }
+        return;
+      }
+
       const res = await fetch(`${API_BASE}/api/pick-folder`);
+      if (!res.ok) throw new Error(`Folder picker failed (${res.status})`);
       const data = await res.json();
       if (data.path) {
         if (type === 'input') setInputDir(data.path);
         else setOutputDir(data.path);
       }
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      console.error(err);
+      const pickerMode = isTauri ? 'Tauri dialog' : 'system picker';
+      alert(err?.message || `Unable to pick folder via ${pickerMode}. Please try again or check permissions.`);
+    }
   };
 
   const handleStartLocal = async () => {
-    await fetch(`${API_BASE}/api/convert`, {
+    const res = await fetch(`${API_BASE}/api/convert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inputDir, outputDir, brand, format, quality })
     });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      alert(error.error || `Failed to start local conversion (HTTP ${res.status}). Please verify input/output folders exist and permissions are allowed.`);
+    }
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
@@ -130,11 +148,16 @@ function App() {
 
   const handleStartCloud = async () => {
     if (!uploadedFiles) return;
-    await fetch(`${API_BASE}/api/convert-cloud`, {
+    const res = await fetch(`${API_BASE}/api/convert-cloud`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ files: uploadedFiles, format, quality })
     });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      alert(error.error || `Failed to start cloud conversion (HTTP ${res.status}). Please verify files were uploaded successfully and try again.`);
+      return;
+    }
     setUploadedFiles(null); // Reset after starting
   };
 
@@ -143,7 +166,7 @@ function App() {
     setStatus({ active: false, total: 0, progress: 0, currentFile: '', zipPath: null });
     setUploadedFiles(null);
     setUploadProgress(0);
-    await fetch(`${API_BASE}/api/clear`, { method: 'POST' });
+    await fetch(`${API_BASE}/api/clear`, { method: 'POST' }).catch(() => {});
     setSelectedFiles([]);
   };
 

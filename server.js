@@ -1,23 +1,81 @@
 import express from 'express';
 import cors from 'cors';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
 import { existsSync, createWriteStream, mkdirSync } from 'fs';
+import { createRequire } from 'module';
 import multer from 'multer';
-import { ZipArchive } from 'archiver';
+const require = createRequire(import.meta.url);
+const archiver = require('archiver');
 
 // Ensure directories exist
 if (!existsSync('uploads')) mkdirSync('uploads');
 if (!existsSync('outputs')) mkdirSync('outputs');
 
 const execPromise = promisify(exec);
+const execFilePromise = promisify(execFile);
 const app = express();
 const port = 48211;
 
 // ImageMagick Path
-const MAGICK_PATH = `"C:\\Program Files\\ImageMagick-7.1.2-Q16\\magick.exe"`;
+const DEFAULT_MAGICK_PATH = process.platform === 'win32'
+  ? 'C:\\Program Files\\ImageMagick-7.1.2-Q16\\magick.exe'
+  : 'magick';
+const MAGICK_PATH = (process.env.MAGICK_PATH || DEFAULT_MAGICK_PATH).replace(/^['"]+|['"]+$/g, '');
+const RESERVED_WINDOWS_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9']);
+
+async function convertWithMagick({ inputPath, outputPath, format, quality }) {
+  const args = [inputPath, '-auto-orient', '-auto-level'];
+  if (format === 'jpg') args.push('-quality', String(quality || 100));
+  args.push(outputPath);
+  await execFilePromise(MAGICK_PATH, args);
+}
+
+function sanitizeOutputBaseName(input, fallbackValue) {
+  const base = path.parse(path.basename(input || '')).name;
+  const cleaned = base.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim();
+  if (!cleaned || /^\.+$/.test(cleaned) || RESERVED_WINDOWS_NAMES.has(cleaned.toUpperCase())) return fallbackValue;
+  return cleaned.length > 0 ? cleaned : fallbackValue;
+}
+
+async function pickFolderNative() {
+  if (process.platform === 'win32') {
+    const psCommand = `
+      Add-Type -AssemblyName System.Windows.Forms;
+      $f = New-Object System.Windows.Forms.FolderBrowserDialog;
+      $f.Description = "Select a folder for Lumina RAW";
+      if($f.ShowDialog() -eq "OK"){ $f.SelectedPath }
+    `;
+    const { stdout } = await execPromise(`powershell -Command "${psCommand.replace(/\n/g, '')}"`);
+    return stdout.trim();
+  }
+
+  if (process.platform === 'darwin') {
+    const { stdout } = await execPromise(`osascript -e 'POSIX path of (choose folder with prompt "Select a folder for Lumina RAW")'`);
+    return stdout.trim();
+  }
+
+  if (process.platform === 'linux') {
+    try {
+      const { stdout } = await execPromise('zenity --file-selection --directory');
+      const selected = stdout.trim();
+      if (selected) return selected;
+    } catch (_zenityErr) {
+      // try kdialog fallback
+    }
+
+    try {
+      const { stdout } = await execPromise('kdialog --getexistingdirectory');
+      return stdout.trim();
+    } catch (_) {
+      throw new Error('No supported folder picker found on Linux (install zenity or kdialog).');
+    }
+  }
+
+  return '';
+}
 
 app.use(cors());
 app.use(express.json());
@@ -25,18 +83,8 @@ app.use(express.json());
 // --- Native Folder Picker (Windows) ---
 app.get('/api/pick-folder', async (req, res) => {
   try {
-    const psCommand = `
-      Add-Type -AssemblyName System.Windows.Forms;
-      $f = New-Object System.Windows.Forms.FolderBrowserDialog;
-      $f.Description = "Select a folder for Lumina RAW";
-      if($f.ShowDialog() -eq "OK"){ $f.SelectedPath }
-    `;
-    const { exec } = await import('child_process');
-    exec(`powershell -Command "${psCommand.replace(/\n/g, '')}"`, (err, stdout, stderr) => {
-      if (err) return res.status(500).json({ error: err.message });
-      const pickedPath = stdout.trim();
-      res.json({ path: pickedPath });
-    });
+    const pickedPath = await pickFolderNative();
+    res.json({ path: pickedPath || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -141,9 +189,7 @@ async function startLocalConversion(files, inputDir, outputDir, format, quality)
     }
 
     try {
-      const qFlag = format === 'jpg' ? `-quality ${quality || 100}` : '';
-      const cmd = `${MAGICK_PATH} "${inputPath}" -auto-orient -auto-level ${qFlag} "${outputPath}"`;
-      await execPromise(cmd);
+      await convertWithMagick({ inputPath, outputPath, format, quality });
       conversionStatus.logs.push(`Completed ${file}`);
     } catch (err) {
       conversionStatus.logs.push(`Error ${file}: ${err.message}`);
@@ -170,26 +216,53 @@ app.post('/api/convert-cloud', async (req, res) => {
   if (!files || files.length === 0) return res.status(400).json({ error: 'No files' });
   if (conversionStatus.active) return res.status(400).json({ error: 'Busy' });
 
+  const uploadsRoot = path.resolve(process.cwd(), 'uploads');
+  const normalizedFiles = files
+    .map(file => {
+      if (!file || typeof file.path !== 'string' || typeof file.originalname !== 'string') return null;
+      const resolvedPath = path.resolve(process.cwd(), file.path);
+      const relativePath = path.relative(uploadsRoot, resolvedPath);
+      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) return null;
+      return {
+        path: resolvedPath,
+        originalname: path.basename(file.originalname),
+        baseName: sanitizeOutputBaseName(file.originalname, 'converted_file')
+      };
+    })
+    .filter(Boolean);
+
+  if (normalizedFiles.length !== files.length) {
+    return res.status(400).json({ error: 'Invalid upload session files' });
+  }
+
   resetStatus();
   conversionStatus.active = true;
-  conversionStatus.total = files.length;
+  conversionStatus.total = normalizedFiles.length;
   res.json({ message: 'Starting cloud conversion' });
 
   const outputDir = path.join(process.cwd(), 'outputs', Date.now().toString());
   await fs.mkdir(outputDir, { recursive: true });
 
   try {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    const usedOutputNames = new Set();
+
+    for (let i = 0; i < normalizedFiles.length; i++) {
+      const file = normalizedFiles[i];
       const ext = format === 'png' ? '.png' : '.jpg';
-      const outputPath = path.join(outputDir, file.originalname + ext);
+      const baseSeed = file.baseName || `converted_${i + 1}`;
+      let baseName = baseSeed;
+      let suffix = 1;
+      while (usedOutputNames.has(baseName.toLowerCase())) {
+        baseName = `${baseSeed}_${suffix}`;
+        suffix += 1;
+      }
+      usedOutputNames.add(baseName.toLowerCase());
+      const outputPath = path.join(outputDir, `${baseName}${ext}`);
       
       conversionStatus.currentFile = file.originalname;
       conversionStatus.progress = i + 1;
 
-      const qFlag = format === 'jpg' ? `-quality ${quality || 100}` : '';
-      const cmd = `${MAGICK_PATH} "${file.path}" -auto-orient -auto-level ${qFlag} "${outputPath}"`;
-      await execPromise(cmd);
+      await convertWithMagick({ inputPath: file.path, outputPath, format, quality });
       conversionStatus.logs.push(`Completed ${file.originalname}`);
       
       // Cleanup uploaded temp file
@@ -199,11 +272,16 @@ app.post('/api/convert-cloud', async (req, res) => {
     const zipName = `converted_${Date.now()}.zip`;
     const zipPath = path.join(process.cwd(), 'outputs', zipName);
     const output = createWriteStream(zipPath);
-    const archive = new ZipArchive({ zlib: { level: 9 } });
+    const archive = archiver('zip', { zlib: { level: 9 } });
 
-    archive.pipe(output);
-    archive.directory(outputDir, false);
-    await archive.finalize();
+    await new Promise((resolve, reject) => {
+      output.on('close', resolve);
+      output.on('error', reject);
+      archive.on('error', reject);
+      archive.pipe(output);
+      archive.directory(outputDir, false);
+      archive.finalize();
+    });
 
     conversionStatus.zipPath = zipName;
   } catch (err) {
