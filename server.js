@@ -27,19 +27,28 @@ const DEFAULT_MAGICK_PATH = process.platform === 'win32'
 const MAGICK_PATH = (process.env.MAGICK_PATH || DEFAULT_MAGICK_PATH).replace(/^['"]+|['"]+$/g, '');
 const RESERVED_WINDOWS_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9']);
 
+function normalizeQuality(quality, fallback = 90) {
+  const num = Number.parseInt(quality, 10);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(100, Math.max(1, num));
+}
+
 async function convertWithWIC({ inputPath, outputPath, format, quality }) {
   const encoderClass = format === 'png' ? 'PngBitmapEncoder' : 'JpegBitmapEncoder';
+  const safeInputPath = inputPath.replace(/'/g, "''");
+  const safeOutputPath = outputPath.replace(/'/g, "''");
+  const normalizedQuality = normalizeQuality(quality, 90);
   const psCommand = `
     Add-Type -AssemblyName PresentationCore, PresentationFramework;
-    $stream = New-Object System.IO.FileStream("${inputPath.replace(/"/g, '`"')}", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read);
+    $stream = New-Object System.IO.FileStream('${safeInputPath}', [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read);
     try {
-    $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::DelayCreation, [System.Windows.Media.Imaging.BitmapCacheOption]::None);
+    $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat, [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad);
     if ($decoder.Frames.Count -gt 0) {
       $frame = $decoder.Frames[0];
       $encoder = New-Object System.Windows.Media.Imaging.${encoderClass};
-      if ("${format}" -eq "jpg") { $encoder.QualityLevel = ${quality || 90} }
+      if ("${format}" -eq "jpg") { $encoder.QualityLevel = ${normalizedQuality} }
       $encoder.Frames.Add($frame);
-      $outStream = New-Object System.IO.FileStream("${outputPath.replace(/"/g, '`"')}", [System.IO.FileMode]::Create);
+      $outStream = New-Object System.IO.FileStream('${safeOutputPath}', [System.IO.FileMode]::Create);
       $encoder.Save($outStream);
       $outStream.Close();
     } else {
@@ -50,10 +59,11 @@ async function convertWithWIC({ inputPath, outputPath, format, quality }) {
     }
   `;
   
-  await execPromise(`powershell -Command "${psCommand.replace(/\n/g, ' ')}"`);
+  await execFilePromise('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCommand]);
 }
 
 async function convertWithMagick({ inputPath, outputPath, format, quality }) {
+  const normalizedQuality = normalizeQuality(quality, 100);
   const args = [
     '-quiet',
     '-define', 'dng:read-thumbnail=false',
@@ -62,7 +72,7 @@ async function convertWithMagick({ inputPath, outputPath, format, quality }) {
     '-auto-level',
     '-colorspace', 'sRGB'
   ];
-  if (format === 'jpg') args.push('-quality', String(quality || 100));
+  if (format === 'jpg') args.push('-quality', String(normalizedQuality));
   args.push(outputPath);
   await execFilePromise(MAGICK_PATH, args);
 }
@@ -78,16 +88,21 @@ const CANON_RAW_EXTENSIONS = new Set(['.cr2', '.cr3', '.crw']);
 
 async function smartConvert(params) {
   const ext = path.extname(params.inputPath).toLowerCase();
+  const normalizedParams = {
+    ...params,
+    quality: normalizeQuality(params.quality, 90)
+  };
   
   // 1. Try "In-App" JPEG extraction first for JPEG outputs only.
   // Canon RAW previews can carry camera-style preview formatting, so skip embedded extraction.
-  if (params.format === 'jpg' && !CANON_RAW_EXTENSIONS.has(ext)) {
+  // Quality setting only applies when we re-encode, so bypass extraction unless using max quality.
+  if (normalizedParams.format === 'jpg' && normalizedParams.quality === 100 && !CANON_RAW_EXTENSIONS.has(ext)) {
     try {
-      console.log(`Extracting embedded JPEG from ${params.inputPath}...`);
-      const rawBuffer = await fs.readFile(params.inputPath);
+      console.log(`Extracting embedded JPEG from ${normalizedParams.inputPath}...`);
+      const rawBuffer = await fs.readFile(normalizedParams.inputPath);
       const embeddedJpeg = extractEmbeddedJpeg(rawBuffer);
       if (embeddedJpeg) {
-        await fs.writeFile(params.outputPath, embeddedJpeg);
+        await fs.writeFile(normalizedParams.outputPath, embeddedJpeg);
         return;
       }
     } catch (err) {
@@ -95,11 +110,11 @@ async function smartConvert(params) {
     }
   }
 
-  // 2. Fallback to WIC (Native Windows)
-  if (process.platform === 'win32' && RAW_EXTENSIONS.includes(ext)) {
+  // 2. Fallback to WIC (Native Windows, JPEG only for reliability)
+  if (process.platform === 'win32' && normalizedParams.format === 'jpg' && RAW_EXTENSIONS.includes(ext)) {
     try {
       console.log(`Using WIC for ${ext} conversion...`);
-      await convertWithWIC(params);
+      await convertWithWIC(normalizedParams);
       return;
     } catch (err) {
       console.warn("WIC conversion failed:", err.message);
@@ -107,7 +122,7 @@ async function smartConvert(params) {
   }
 
   // 3. Last resort: ImageMagick
-  await convertWithMagick(params);
+  await convertWithMagick(normalizedParams);
 }
 
 function sanitizeOutputBaseName(input, fallbackValue) {
