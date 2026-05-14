@@ -122,10 +122,10 @@ async function pickFolderNative() {
     const psCommand = `
       Add-Type -AssemblyName System.Windows.Forms;
       $f = New-Object System.Windows.Forms.FolderBrowserDialog;
-      $f.Description = "Select a folder for Lumina RAW";
-      if($f.ShowDialog() -eq "OK"){ $f.SelectedPath }
+      $f.Description = 'Select a folder for Lumina RAW';
+      if($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){ $f.SelectedPath }
     `;
-    const { stdout } = await execPromise(`powershell -Command "${psCommand.replace(/\n/g, '')}"`);
+    const { stdout } = await execFilePromise('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCommand]);
     return stdout.trim();
   }
 
