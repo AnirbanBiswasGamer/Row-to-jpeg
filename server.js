@@ -62,8 +62,8 @@ async function convertWithWIC({ inputPath, outputPath, format, quality }) {
     }
   `;
   
-  const inlinePsCommand = psCommand.replace(/\r?\n/g, ' ').trim();
-  await execFilePromise('powershell', ['-NoProfile', '-NonInteractive', '-Command', inlinePsCommand]);
+  const encodedPsCommand = Buffer.from(psCommand, 'utf16le').toString('base64');
+  await execFilePromise('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedPsCommand]);
 }
 
 async function convertWithMagick({ inputPath, outputPath, format, quality }) {
