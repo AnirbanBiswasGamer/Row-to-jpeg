@@ -6,33 +6,109 @@ import fs from 'fs/promises';
  */
 export async function extractEmbeddedJpeg(inputPath, outputPath) {
   const buffer = await fs.readFile(inputPath);
-  let bestStart = -1;
-  let bestEnd = -1;
-  let maxLen = 0;
+  const embeddedJpeg = findLargestEmbeddedJpeg(buffer);
 
-  // Scan for all JPEG Start-Of-Image markers
-  for (let i = 0; i < buffer.length - 1000; i++) {
-    if (buffer[i] === 0xFF && buffer[i+1] === 0xD8) {
-      // For each SOI, find the LAST EOI (FF D9) in the file to catch the largest possible block
-      // Most RAW files have the full-res preview as a single large block
-      for (let j = buffer.length - 2; j > i + 1000; j--) {
-        if (buffer[j] === 0xFF && buffer[j+1] === 0xD9) {
-          const currentLen = j + 2 - i;
-          // Most full-res previews are at least 1MB
-          if (currentLen > maxLen && currentLen > 500000) { 
-            maxLen = currentLen;
-            bestStart = i;
-            bestEnd = j + 2;
-            break; // Found the largest for this SOI
-          }
-        }
-      }
-    }
-  }
-
-  if (bestStart !== -1) {
-    await fs.writeFile(outputPath, buffer.subarray(bestStart, bestEnd));
+  if (embeddedJpeg) {
+    await fs.writeFile(outputPath, embeddedJpeg);
     return true;
   }
   return false;
+}
+
+function findLargestEmbeddedJpeg(buffer) {
+  let bestJpeg = null;
+
+  for (let start = 0; start < buffer.length - 1; start += 1) {
+    if (buffer[start] !== 0xFF || buffer[start + 1] !== 0xD8) continue;
+
+    const end = findJpegEnd(buffer, start);
+    if (end === -1) continue;
+
+    const candidate = buffer.subarray(start, end);
+    if (candidate.length < 64 * 1024) continue;
+
+    if (!bestJpeg || candidate.length > bestJpeg.length) {
+      bestJpeg = candidate;
+    }
+  }
+
+  return bestJpeg;
+}
+
+function findJpegEnd(buffer, start) {
+  let offset = start + 2;
+
+  while (offset < buffer.length - 1) {
+    if (buffer[offset] !== 0xFF) {
+      offset += 1;
+      continue;
+    }
+
+    let markerOffset = offset + 1;
+    while (markerOffset < buffer.length && buffer[markerOffset] === 0xFF) {
+      markerOffset += 1;
+    }
+
+    if (markerOffset >= buffer.length) return -1;
+
+    const marker = buffer[markerOffset];
+
+    if (marker === 0x00) {
+      offset = markerOffset + 1;
+      continue;
+    }
+
+    if (marker === 0xD9) {
+      return markerOffset + 1;
+    }
+
+    if (marker >= 0xD0 && marker <= 0xD7) {
+      offset = markerOffset + 1;
+      continue;
+    }
+
+    if (marker === 0x01) {
+      offset = markerOffset + 1;
+      continue;
+    }
+
+    if (marker === 0xDA) {
+      offset = markerOffset + 1;
+
+      if (offset + 2 >= buffer.length) return -1;
+
+      const segmentLength = buffer.readUInt16BE(offset);
+      if (segmentLength < 2 || offset + segmentLength > buffer.length) return -1;
+      offset += segmentLength;
+
+      while (offset < buffer.length - 1) {
+        if (buffer[offset] !== 0xFF) {
+          offset += 1;
+          continue;
+        }
+
+        const nextByte = buffer[offset + 1];
+        if (nextByte === 0x00 || (nextByte >= 0xD0 && nextByte <= 0xD7)) {
+          offset += 2;
+          continue;
+        }
+
+        if (nextByte === 0xD9) {
+          return offset + 2;
+        }
+
+        break;
+      }
+
+      continue;
+    }
+
+    if (markerOffset + 2 >= buffer.length) return -1;
+    const segmentLength = buffer.readUInt16BE(markerOffset + 1);
+    if (segmentLength < 2) return -1;
+
+    offset = markerOffset + 1 + segmentLength;
+  }
+
+  return -1;
 }

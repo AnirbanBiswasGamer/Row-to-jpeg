@@ -78,13 +78,15 @@ const RAW_EXTENSIONS = [
 async function smartConvert(params) {
   const ext = path.extname(params.inputPath).toLowerCase();
   
-  // 1. Try "In-App" extraction first (Best for avoiding corruption)
-  try {
-    console.log(`Extracting embedded JPEG from ${params.inputPath}...`);
-    const success = await extractEmbeddedJpeg(params.inputPath, params.outputPath);
-    if (success) return;
-  } catch (err) {
-    console.warn("In-app extraction failed:", err.message);
+  // 1. Try "In-App" JPEG extraction first for JPEG outputs only.
+  if (params.format === 'jpg') {
+    try {
+      console.log(`Extracting embedded JPEG from ${params.inputPath}...`);
+      const success = await extractEmbeddedJpeg(params.inputPath, params.outputPath);
+      if (success) return;
+    } catch (err) {
+      console.warn("In-app extraction failed:", err.message);
+    }
   }
 
   // 2. Fallback to WIC (Native Windows)
