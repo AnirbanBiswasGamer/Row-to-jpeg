@@ -163,7 +163,11 @@ app.get('/api/pick-folder', async (req, res) => {
     const pickedPath = await pickFolderNative();
     res.json({ path: pickedPath || null });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.json({
+      path: null,
+      warning: err.message,
+      defaultPath: process.cwd()
+    });
   }
 });
 

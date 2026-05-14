@@ -68,6 +68,22 @@ function App() {
   };
 
   const pickFolder = async (type) => {
+    const assignPath = (selectedPath) => {
+      if (!selectedPath || !selectedPath.trim()) return false;
+      if (type === 'input') setInputDir(selectedPath.trim());
+      else setOutputDir(selectedPath.trim());
+      return true;
+    };
+
+    const askManualPath = (reason, defaultPath = '') => {
+      const currentValue = type === 'input' ? inputDir : outputDir;
+      const entered = window.prompt(
+        `Folder picker unavailable${reason ? `: ${reason}` : ''}\nPlease enter full folder path manually:`,
+        currentValue || defaultPath || ''
+      );
+      return assignPath(entered || '');
+    };
+
     try {
       // 1. Try native Tauri dialog if available
       if (isTauri) {
@@ -76,8 +92,7 @@ function App() {
           const selected = await open({ directory: true, multiple: false });
           if (selected) {
             const path = Array.isArray(selected) ? selected[0] : selected;
-            if (type === 'input') setInputDir(path);
-            else setOutputDir(path);
+            assignPath(path);
             return;
           }
         } catch (tauriErr) {
@@ -88,15 +103,18 @@ function App() {
 
       // 2. Fallback to our robust API-based PowerShell picker
       const res = await fetch(`${API_BASE}/api/pick-folder`);
-      if (!res.ok) throw new Error(`Server picker failed (HTTP ${res.status})`);
-      const data = await res.json();
-      if (data.path) {
-        if (type === 'input') setInputDir(data.path);
-        else setOutputDir(data.path);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && assignPath(data.path || '')) {
+        return;
       }
+
+      const reason = (data && (data.error || data.warning)) || (!res.ok ? `Server picker failed (HTTP ${res.status})` : '');
+      askManualPath(reason, data?.defaultPath);
     } catch (err) {
       console.error("Folder pick error:", err);
-      alert(`Connection Error: Ensure the background server is running. ${err.message}`);
+      if (!askManualPath(err.message)) {
+        alert(`Connection Error: Ensure the background server is running. ${err.message}`);
+      }
     }
   };
 
