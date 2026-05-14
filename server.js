@@ -8,6 +8,7 @@ import { existsSync, createWriteStream, mkdirSync } from 'fs';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const archiver = require('archiver');
+import { extractEmbeddedJpeg } from './extractor.js';
 import multer from 'multer';
 
 // Ensure directories exist
@@ -32,7 +33,8 @@ async function convertWithWIC({ inputPath, outputPath, format, quality }) {
     Add-Type -AssemblyName PresentationCore, PresentationFramework;
     $stream = New-Object System.IO.FileStream("${inputPath.replace(/"/g, '`"')}", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read);
     try {
-      $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::None, [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad);
+    $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::DelayCreation, [System.Windows.Media.Imaging.BitmapCacheOption]::None);
+    if ($decoder.Frames.Count -gt 0) {
       $frame = $decoder.Frames[0];
       $encoder = New-Object System.Windows.Media.Imaging.${encoderClass};
       if ("${format}" -eq "jpg") { $encoder.QualityLevel = ${quality || 90} }
@@ -40,6 +42,9 @@ async function convertWithWIC({ inputPath, outputPath, format, quality }) {
       $outStream = New-Object System.IO.FileStream("${outputPath.replace(/"/g, '`"')}", [System.IO.FileMode]::Create);
       $encoder.Save($outStream);
       $outStream.Close();
+    } else {
+      throw "No frames found in image";
+    }
     } finally {
       $stream.Close();
     }
@@ -62,19 +67,38 @@ async function convertWithMagick({ inputPath, outputPath, format, quality }) {
   await execFilePromise(MAGICK_PATH, args);
 }
 
-const RAW_EXTENSIONS = ['.nef', '.cr2', '.arw', '.dng', '.orf', '.raf'];
+const RAW_EXTENSIONS = [
+  '.3fr', '.arw', '.bay', '.bmq', '.cap', '.cine', '.cr2', '.cr3', '.crw', '.cs1',
+  '.dc2', '.dcr', '.dng', '.drf', '.dsc', '.erf', '.fff', '.ia', '.iiq', '.k25',
+  '.kc2', '.kdc', '.mdc', '.mef', '.mos', '.mrw', '.nef', '.nrw', '.orf', '.pef',
+  '.ptx', '.pxn', '.qtk', '.raf', '.raw', '.rdc', '.rw2', '.rwl', '.rwz', '.sr2',
+  '.srf', '.srw', '.sti', '.x3f'
+];
 
 async function smartConvert(params) {
   const ext = path.extname(params.inputPath).toLowerCase();
+  
+  // 1. Try "In-App" extraction first (Best for avoiding corruption)
+  try {
+    console.log(`Extracting embedded JPEG from ${params.inputPath}...`);
+    const success = await extractEmbeddedJpeg(params.inputPath, params.outputPath);
+    if (success) return;
+  } catch (err) {
+    console.warn("In-app extraction failed:", err.message);
+  }
+
+  // 2. Fallback to WIC (Native Windows)
   if (process.platform === 'win32' && RAW_EXTENSIONS.includes(ext)) {
     try {
       console.log(`Using WIC for ${ext} conversion...`);
       await convertWithWIC(params);
       return;
     } catch (err) {
-      console.warn("WIC conversion failed, falling back to Magick:", err.message);
+      console.warn("WIC conversion failed:", err.message);
     }
   }
+
+  // 3. Last resort: ImageMagick
   await convertWithMagick(params);
 }
 
@@ -148,13 +172,6 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
 });
 
-const RAW_EXTENSIONS = [
-  '.3fr', '.arw', '.bay', '.bmq', '.cap', '.cine', '.cr2', '.cr3', '.crw', '.cs1',
-  '.dc2', '.dcr', '.dng', '.drf', '.dsc', '.erf', '.fff', '.ia', '.iiq', '.k25',
-  '.kc2', '.kdc', '.mdc', '.mef', '.mos', '.mrw', '.nef', '.nrw', '.orf', '.pef',
-  '.ptx', '.pxn', '.qtk', '.raf', '.raw', '.rdc', '.rw2', '.rwl', '.rwz', '.sr2',
-  '.srf', '.srw', '.sti', '.x3f'
-];
 
 let conversionStatus = {
   active: false,
@@ -203,7 +220,7 @@ app.get('/api/browse', async (req, res) => {
 
 // --- Local Conversion API ---
 app.post('/api/convert', async (req, res) => {
-  const { inputDir, outputDir, brand, format, quality } = req.body;
+  const { inputDir, outputDir, format, quality } = req.body;
   if (conversionStatus.active) return res.status(400).json({ error: 'Busy' });
 
   try {

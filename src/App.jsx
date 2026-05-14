@@ -2,19 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDropzone } from 'react-dropzone';
 
-const BRANDS = [
-  { id: 'all', name: 'Universal' },
-  { id: 'sony', name: 'Sony' },
-  { id: 'canon', name: 'Canon' },
-  { id: 'nikon', name: 'Nikon' },
-];
 
 const isTauri = !!window.__TAURI_INTERNALS__;
 const API_BASE = isTauri ? 'http://127.0.0.1:48211' : '';
 
 function App() {
   const [mode, setMode] = useState('local');
-  const [brand, setBrand] = useState('all');
   const [inputDir, setInputDir] = useState('');
   const [outputDir, setOutputDir] = useState('');
   const [format, setFormat] = useState('jpg');
@@ -95,7 +88,7 @@ function App() {
     const res = await fetch(`${API_BASE}/api/convert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inputDir, outputDir, brand, format, quality })
+      body: JSON.stringify({ inputDir, outputDir, format, quality })
     });
     if (!res.ok) {
       const error = await res.json().catch(() => ({}));
@@ -250,24 +243,6 @@ function App() {
                 </div>
               )}
 
-              <div className="space-y-base">
-                <label className="text-label-sm text-outline">Camera Brand</label>
-                <div className="flex flex-wrap gap-sm">
-                  {BRANDS.map(b => (
-                    <button 
-                      key={b.id}
-                      onClick={() => setBrand(b.id)}
-                      className={`px-md py-sm rounded-lg text-label-sm font-bold transition-all ${
-                        brand === b.id 
-                        ? 'bg-primary-container text-on-primary-container shadow-lg shadow-primary/20 scale-105' 
-                        : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-bright'
-                      }`}
-                    >
-                      {b.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </div>
           </section>
 
