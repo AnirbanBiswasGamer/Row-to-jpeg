@@ -28,7 +28,7 @@ const MAGICK_PATH = (process.env.MAGICK_PATH || DEFAULT_MAGICK_PATH).replace(/^[
 const RESERVED_WINDOWS_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9']);
 
 function normalizeQuality(quality, fallback = 90) {
-  const num = Number.parseInt(quality, 10);
+  const num = parseInt(quality, 10);
   if (!Number.isFinite(num)) return fallback;
   return Math.min(100, Math.max(1, num));
 }
@@ -42,6 +42,8 @@ async function convertWithWIC({ inputPath, outputPath, format, quality }) {
     Add-Type -AssemblyName PresentationCore, PresentationFramework;
     $stream = New-Object System.IO.FileStream('${safeInputPath}', [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read);
     try {
+    # PreservePixelFormat + OnLoad avoids delayed/lazy decode issues seen with some RAW->PNG decodes.
+    # OnLoad fully decodes before stream close, reducing corruption risk on certain camera RAW formats.
     $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat, [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad);
     if ($decoder.Frames.Count -gt 0) {
       $frame = $decoder.Frames[0];
@@ -95,7 +97,8 @@ async function smartConvert(params) {
   
   // 1. Try "In-App" JPEG extraction first for JPEG outputs only.
   // Canon RAW previews can carry camera-style preview formatting, so skip embedded extraction.
-  // Quality setting only applies when we re-encode, so bypass extraction unless using max quality.
+  // Embedded JPEG extraction is a direct byte copy and does not re-encode.
+  // To honor user-selected JPEG quality, only use embedded extraction at 100 (no quality reduction requested).
   if (normalizedParams.format === 'jpg' && normalizedParams.quality === 100 && !CANON_RAW_EXTENSIONS.has(ext)) {
     try {
       console.log(`Extracting embedded JPEG from ${normalizedParams.inputPath}...`);
