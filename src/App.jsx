@@ -6,6 +6,22 @@ import { useDropzone } from 'react-dropzone';
 const isTauri = !!window.__TAURI_INTERNALS__;
 const API_BASE = isTauri ? 'http://127.0.0.1:48211' : '';
 
+const getBrandFromExt = (filename) => {
+  if (!filename) return null;
+  const ext = filename.split('.').pop().toLowerCase();
+  const map = {
+    nef: 'Nikon', nrw: 'Nikon',
+    cr2: 'Canon', cr3: 'Canon', crw: 'Canon',
+    arw: 'Sony', srf: 'Sony', sr2: 'Sony',
+    orf: 'Olympus',
+    raf: 'Fujifilm',
+    dng: 'Digital Negative (DNG)',
+    rw2: 'Panasonic',
+    rwl: 'Leica'
+  };
+  return map[ext] || 'Unknown Brand';
+};
+
 function App() {
   const [mode, setMode] = useState('local');
   const [inputDir, setInputDir] = useState('');
@@ -242,6 +258,28 @@ function App() {
                   </div>
                 </div>
               )}
+
+              {/* Detected Brand Display */}
+              <div className="space-y-base pt-md border-t border-outline-variant/30">
+                <label className="text-label-sm text-outline">Detected Camera</label>
+                <div className="bg-surface-container-low border border-outline-variant/30 rounded-xl px-md py-sm flex items-center gap-sm shadow-sm">
+                  <div className="w-8 h-8 rounded-full bg-secondary/10 flex items-center justify-center">
+                    <span className="material-symbols-outlined text-secondary text-[20px]">
+                      {selectedFiles.length > 0 ? 'photo_camera' : (inputDir ? 'auto_fix' : 'sensors')}
+                    </span>
+                  </div>
+                  <div>
+                    <div className="text-label-sm font-bold text-on-surface">
+                      {selectedFiles.length > 0 
+                        ? getBrandFromExt(selectedFiles[0].name)
+                        : (mode === 'local' && inputDir ? 'Mixed RAW Formats' : 'Auto-Detect Ready')}
+                    </div>
+                    <div className="text-[10px] text-on-surface-variant uppercase tracking-wider font-medium">
+                      Intelligence Engine Active
+                    </div>
+                  </div>
+                </div>
+              </div>
 
             </div>
           </section>
