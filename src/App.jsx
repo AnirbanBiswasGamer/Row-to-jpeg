@@ -79,7 +79,8 @@ function App() {
       }
     } catch (err) {
       console.error(err);
-      alert(err?.message || 'Unable to pick folder.');
+      const pickerMode = isTauri ? 'Tauri dialog' : 'system picker';
+      alert(err?.message || `Unable to pick folder via ${pickerMode}. Please try again or check permissions.`);
     }
   };
 
@@ -91,7 +92,7 @@ function App() {
     });
     if (!res.ok) {
       const error = await res.json().catch(() => ({}));
-      alert(error.error || 'Failed to start local conversion.');
+      alert(error.error || `Failed to start local conversion (HTTP ${res.status}). Please verify input/output folders exist and permissions are allowed.`);
     }
   };
 
@@ -154,7 +155,7 @@ function App() {
     });
     if (!res.ok) {
       const error = await res.json().catch(() => ({}));
-      alert(error.error || 'Failed to start cloud conversion.');
+      alert(error.error || `Failed to start cloud conversion (HTTP ${res.status}). Please verify files were uploaded successfully and try again.`);
       return;
     }
     setUploadedFiles(null); // Reset after starting

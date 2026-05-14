@@ -6,7 +6,7 @@ const children = [];
 function terminateChildren() {
   for (const child of children) {
     if (child && !child.killed) {
-      child.kill('SIGTERM');
+      child.kill();
     }
   }
 }
@@ -30,8 +30,14 @@ function exitWith(code) {
   process.exit(code);
 }
 
-server.on('exit', code => exitWith(code ?? 0));
-web.on('exit', code => exitWith(code ?? 0));
+server.on('exit', code => {
+  if ((code ?? 0) !== 0) console.error(`Backend dev server exited with code ${code}`);
+  exitWith(code ?? 0);
+});
+web.on('exit', code => {
+  if ((code ?? 0) !== 0) console.error(`Frontend dev server exited with code ${code}`);
+  exitWith(code ?? 0);
+});
 
 process.on('SIGINT', () => exitWith(0));
 process.on('SIGTERM', () => exitWith(0));
